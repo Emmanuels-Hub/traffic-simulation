@@ -1,0 +1,204 @@
+/* ─── Picture-In-Picture Camera View (Top Right Overlay) ────────── */
+
+.pip-camera-container {
+  position: fixed;
+  top: 16px;
+  right: 356px; /* Sits next to the Control Panel */
+  width: 280px;
+  height: 185px;
+  background: rgba(10, 12, 20, 0.88);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 12px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(0, 0, 0, 0.4);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  z-index: 900;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.pip-camera-container.large {
+  width: 420px;
+  height: 270px;
+}
+
+.pip-minimized-btn {
+  position: fixed;
+  top: 16px;
+  right: 356px;
+  padding: 8px 16px;
+  background: rgba(15, 18, 30, 0.9);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 20px;
+  color: #3498db;
+  font-weight: 600;
+  font-size: 12px;
+  cursor: pointer;
+  z-index: 900;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  transition: all 0.2s ease;
+}
+
+.pip-minimized-btn:hover {
+  background: rgba(25, 30, 50, 0.95);
+  color: #5dade2;
+  transform: translateY(-1px);
+}
+
+/* ─── Header ──────────────────────────────────────────────────── */
+
+.pip-header {
+  height: 32px;
+  background: rgba(5, 7, 12, 0.9);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 10px;
+  user-select: none;
+}
+
+.pip-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.rec-dot {
+  color: #e74c3c;
+  font-size: 10px;
+  animation: pulse-red 1.5s infinite;
+}
+
+@keyframes pulse-red {
+  0% { opacity: 1; }
+  50% { opacity: 0.3; }
+  100% { opacity: 1; }
+}
+
+.pip-label {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  color: #e0e0e0;
+}
+
+.pip-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.pip-select {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 4px;
+  color: #ddd;
+  font-size: 10px;
+  padding: 2px 6px;
+  outline: none;
+  cursor: pointer;
+}
+
+.pip-select option {
+  background: #111420;
+  color: #fff;
+}
+
+.pip-btn {
+  background: transparent;
+  border: none;
+  color: #aaa;
+  font-size: 12px;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 4px;
+  transition: background 0.15s;
+}
+
+.pip-btn:hover {
+  background: rgba(255, 255, 255, 0.15);
+  color: #fff;
+}
+
+/* ─── Viewport ────────────────────────────────────────────────── */
+
+.pip-viewport {
+  flex: 1;
+  position: relative;
+  width: 100%;
+  height: 100%;
+  background: #05070c;
+}
+
+.pip-info-overlay {
+  position: absolute;
+  bottom: 8px;
+  left: 8px;
+  right: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 8px;
+  background: rgba(10, 14, 24, 0.85);
+  backdrop-filter: blur(8px);
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  pointer-events: auto;
+}
+
+.pip-vehicle-badge {
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 9px;
+  font-weight: 700;
+  color: #fff;
+  text-shadow: 0 1px 2px rgba(0,0,0,0.8);
+}
+
+.pip-speed {
+  font-size: 12px;
+  font-weight: 800;
+  color: #3498db;
+  font-family: monospace;
+}
+
+.pip-speed .unit {
+  font-size: 9px;
+  color: #888;
+  font-weight: 400;
+}
+
+.pip-cycle-btn {
+  background: rgba(52, 152, 219, 0.2);
+  border: 1px solid rgba(52, 152, 219, 0.4);
+  color: #5dade2;
+  border-radius: 4px;
+  font-size: 10px;
+  padding: 2px 8px;
+  cursor: pointer;
+  font-weight: 600;
+  transition: all 0.15s;
+}
+
+.pip-cycle-btn:hover {
+  background: rgba(52, 152, 219, 0.4);
+  color: #fff;
+}
+
+/* Dashcam HUD crosshair reticle */
+.dashcam-hud-reticle {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 16px;
+  height: 16px;
+  transform: translate(-50%, -50%);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 50%;
+  pointer-events: none;
+}

@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import type { Junction, TrafficLight, TrafficLightPhase } from '../types';
+import type { Junction, TrafficLightPhase } from '../types';
 
 // ─── City Layout Constants ───────────────────────────────────────
 // The city is laid out on a grid. Units are in "meters" for realism.
@@ -248,13 +248,13 @@ export const ROUTES: Route[] = [
       new THREE.Vector3(-BLOCK_SIZE / 2 - 25, 0.01, BLOCK_SIZE / 2 - 2),
       new THREE.Vector3(-BLOCK_SIZE / 2, 0.01, BLOCK_SIZE / 2 - 2),
       new THREE.Vector3(BLOCK_SIZE / 2, 0.01, BLOCK_SIZE / 2 - 2),
-      new THREE.Vector3(BLOCK_SIZE / 2 - 2, 0.01, BLOCK_SIZE / 2),
-      new THREE.Vector3(BLOCK_SIZE / 2 - 2, 0.01, BLOCK_SIZE + 2),
+      new THREE.Vector3(BLOCK_SIZE / 2 + 2, 0.01, BLOCK_SIZE / 2),
+      new THREE.Vector3(BLOCK_SIZE / 2 + 2, 0.01, BLOCK_SIZE + 2),
       new THREE.Vector3(BLOCK_SIZE / 2 + 12, 0.01, BLOCK_SIZE + 15),
       new THREE.Vector3(BLOCK_SIZE / 2 + 27, 0.01, BLOCK_SIZE + 2),
       new THREE.Vector3(BLOCK_SIZE / 2 + 27, 0.01, BLOCK_SIZE / 2),
-      new THREE.Vector3(BLOCK_SIZE / 2 + 2, 0.01, BLOCK_SIZE / 2),
-      new THREE.Vector3(BLOCK_SIZE / 2 + 2, 0.01, -BLOCK_SIZE / 2),
+      new THREE.Vector3(BLOCK_SIZE / 2 - 2, 0.01, BLOCK_SIZE / 2),
+      new THREE.Vector3(BLOCK_SIZE / 2 - 2, 0.01, -BLOCK_SIZE / 2),
       new THREE.Vector3(BLOCK_SIZE / 2, 0.01, -BLOCK_SIZE / 2 - 2),
       new THREE.Vector3(-BLOCK_SIZE / 2 - 25, 0.01, -BLOCK_SIZE / 2 - 2),
     ],
@@ -401,11 +401,11 @@ export interface BuildingConfig {
 
 export const BUILDINGS: BuildingConfig[] = [
   // Inner block (between the 4 junctions)
-  { position: [-10, 4, -10], size: [12, 8, 12], color: '#7f8c8d', type: 'office' },
-  { position: [10, 3, -8], size: [10, 6, 14], color: '#95a5a6', type: 'commercial' },
-  { position: [-8, 5, 10], size: [14, 10, 10], color: '#bdc3c7', type: 'office' },
-  { position: [10, 3.5, 10], size: [10, 7, 10], color: '#7f8c8d', type: 'residential' },
-  { position: [0, 2, 0], size: [8, 4, 8], color: '#27ae60', type: 'park' },
+  { position: [-10, 0, -10], size: [12, 8, 12], color: '#7f8c8d', type: 'office' },
+  { position: [10, 0, -8], size: [10, 6, 14], color: '#95a5a6', type: 'commercial' },
+  { position: [-8, 0, 10], size: [14, 10, 10], color: '#bdc3c7', type: 'office' },
+  { position: [10, 0, 10], size: [10, 7, 10], color: '#7f8c8d', type: 'residential' },
+  { position: [0, 0, 0], size: [8, 4, 8], color: '#27ae60', type: 'park' },
   
   // Outer buildings - North West
   { position: [-BLOCK_SIZE / 2 - 18, 4.5, -BLOCK_SIZE / 2 - 18], size: [14, 9, 14], color: '#8e99a4', type: 'residential' },

@@ -2,6 +2,7 @@ import React from 'react';
 import { Scene } from './components/3d/Scene';
 import { ControlPanel } from './components/ui/ControlPanel';
 import { AnalyticsDashboard } from './components/ui/AnalyticsDashboard';
+import { CameraOverlay } from './components/ui/CameraOverlay';
 import { useSimulationStore } from './store/simulationStore';
 import './App.css';
 
@@ -14,6 +15,9 @@ const App: React.FC = () => {
       <div className="viewport">
         <Scene />
       </div>
+
+      {/* Camera View Overlay (Top Right Picture-in-Picture) */}
+      <CameraOverlay />
 
       {/* Analytics overlay */}
       {viewMode === 'analytics' && <AnalyticsDashboard />}

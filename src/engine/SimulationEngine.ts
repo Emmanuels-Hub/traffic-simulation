@@ -24,6 +24,49 @@ const JUNCTION_ZONES: JunctionZone[] = JUNCTIONS.map((j) => ({
   trafficLightId: j.trafficLight!.id,
 }));
 
+// ─── Arc-length path utilities ───────────────────────────────────
+function getPathInfo(waypoints: THREE.Vector3[]): { totalLength: number; segLengths: number[] } {
+  const segLengths: number[] = [];
+  let totalLength = 0;
+  for (let i = 0; i < waypoints.length - 1; i++) {
+    const len = waypoints[i].distanceTo(waypoints[i + 1]);
+    segLengths.push(len);
+    totalLength += len;
+  }
+  return { totalLength, segLengths };
+}
+
+function getArcLengthPosition(
+  waypoints: THREE.Vector3[],
+  pathProgress: number,
+  pathInfo: { totalLength: number; segLengths: number[] }
+): { position: THREE.Vector3; direction: THREE.Vector3; segmentIndex: number } {
+  const { totalLength, segLengths } = pathInfo;
+  const targetDist = pathProgress * totalLength;
+  let accumulated = 0;
+  const totalSegments = waypoints.length - 1;
+
+  for (let i = 0; i < totalSegments; i++) {
+    if (accumulated + segLengths[i] >= targetDist || i === totalSegments - 1) {
+      const segProgress = segLengths[i] > 0
+        ? Math.max(0, Math.min(1, (targetDist - accumulated) / segLengths[i]))
+        : 0;
+      const pos = new THREE.Vector3().lerpVectors(waypoints[i], waypoints[i + 1], segProgress);
+      pos.y = 0.01;
+      const dir = new THREE.Vector3().subVectors(waypoints[i + 1], waypoints[i]).normalize();
+      return { position: pos, direction: dir, segmentIndex: i };
+    }
+    accumulated += segLengths[i];
+  }
+
+  const pos = waypoints[totalSegments].clone();
+  pos.y = 0.01;
+  const dir = new THREE.Vector3()
+    .subVectors(waypoints[totalSegments], waypoints[totalSegments - 1])
+    .normalize();
+  return { position: pos, direction: dir, segmentIndex: totalSegments - 1 };
+}
+
 // ─── Initialize traffic lights in the store ──────────────────────
 export function initializeTrafficLights(): void {
   const lightsMap = new Map<string, TrafficLight>();
@@ -48,16 +91,9 @@ export function initializeTrafficLights(): void {
 
       const waypoints = route.waypoints;
       const progress = 0.05 + (i * 0.12);
-      const totalSegments = waypoints.length - 1;
-      const progressScaled = progress * totalSegments;
-      const segmentIndex = Math.min(Math.floor(progressScaled), totalSegments - 1);
-      const segmentProgress = progressScaled - segmentIndex;
-      const startPt = waypoints[segmentIndex];
-      const endPt = waypoints[Math.min(segmentIndex + 1, waypoints.length - 1)];
-      const startPos = new THREE.Vector3().lerpVectors(startPt, endPt, segmentProgress);
-      startPos.y = 0.01;
+      const pathInfo = getPathInfo(waypoints);
+      const { position: startPos, direction: dir } = getArcLengthPosition(waypoints, progress, pathInfo);
 
-      const dir = new THREE.Vector3().subVectors(endPt, startPt).normalize();
       const angle = Math.atan2(dir.x, dir.z);
 
       const v: Vehicle = {
@@ -131,17 +167,15 @@ export function getDirectionalSignalState(
   return 'red'; // Inactive directions are RED!
 }
 
-// Classify vehicle's travel direction based on next path waypoint
+// Classify vehicle's travel direction based on arc-length path position
 function getVehicleTravelDirection(
   vehicle: Vehicle,
   waypoints: THREE.Vector3[]
 ): 'north' | 'south' | 'east' | 'west' {
-  const waypointsCount = waypoints.length;
-  const nextWaypointIdx = Math.min(
-    Math.floor(vehicle.pathProgress * (waypointsCount - 1)) + 1,
-    waypointsCount - 1
-  );
+  const pathInfo = getPathInfo(waypoints);
+  const { segmentIndex } = getArcLengthPosition(waypoints, vehicle.pathProgress, pathInfo);
 
+  const nextWaypointIdx = Math.min(segmentIndex + 1, waypoints.length - 1);
   const pos = vehicle.position;
   const nextWP = waypoints[nextWaypointIdx];
   const dx = nextWP.x - pos.x;
@@ -163,10 +197,12 @@ function checkTrafficLightStop(
 
   for (const zone of JUNCTION_ZONES) {
     const distToCenter = pos.distanceTo(zone.center);
-    const stopLineRadius = zone.radius + 1.8; // Intersection stop bar line
+    const stopLineRadius = zone.radius + 2.5; // Stop bar a bit further out
 
-    // Approaching intersection stop bar line
-    if (distToCenter < zone.radius + 12 && distToCenter > stopLineRadius - 3.0) {
+    // CRITICAL: Only check vehicles APPROACHING from outside the junction.
+    // Once a vehicle has entered the junction (dist < stopLineRadius),
+    // it is "committed" and MUST clear through — never stop mid-intersection.
+    if (distToCenter >= stopLineRadius && distToCenter < stopLineRadius + 14) {
       const travelDir = getVehicleTravelDirection(vehicle, waypoints);
       const store = useSimulationStore.getState();
       const light = store.trafficLights.get(zone.trafficLightId);
@@ -176,12 +212,10 @@ function checkTrafficLightStop(
 
         if (signalColor === 'red') {
           // RED LIGHT: Must stop completely before the stop line
-          if (distToCenter >= stopLineRadius - 2.5) {
-            return true;
-          }
+          return true;
         } else if (signalColor === 'yellow') {
-          // YELLOW LIGHT: Stop if vehicle has not crossed stop line yet
-          if (distToCenter >= stopLineRadius) {
+          // YELLOW LIGHT: Stop only if far enough to brake safely
+          if (distToCenter >= stopLineRadius + 3) {
             return true;
           }
         }
@@ -219,15 +253,23 @@ function getObstacleAhead(
     const dist = toOther.length();
     const dot = toOther.clone().normalize().dot(facingDir);
 
-    // Forward path check (~160 degree cone)
-    if (dist < 22 && dot > 0.2) {
-      const minSafeGap = (vehicle.length + other.length) / 2 + 2.5;
+    // Forward path check — tighter cone (~90°) to avoid cross-traffic false positives
+    if (dist < 18 && dot > 0.5) {
+      // Detect head-on (facing each other): one vehicle yields by ID priority
+      const otherFacing = new THREE.Vector3(
+        Math.sin(other.rotation.y), 0, Math.cos(other.rotation.y)
+      ).normalize();
+      if (facingDir.dot(otherFacing) < -0.5 && vehicle.id < other.id) {
+        continue; // This vehicle has priority — don't stop for the other
+      }
 
-      if (dist <= minSafeGap + 1.2) {
+      const minSafeGap = (vehicle.length + other.length) / 2 + 2.0;
+
+      if (dist <= minSafeGap + 1.0) {
         minDistance = Math.min(minDistance, dist);
         mustStop = true;
         leadSpeed = other.velocity;
-      } else if (dist < 15.0) {
+      } else if (dist < 12.0) {
         minDistance = Math.min(minDistance, dist);
         leadSpeed = other.velocity;
       }
@@ -308,27 +350,24 @@ export function updateVehicle(
   if (!route) return null;
 
   const waypoints = route.waypoints;
-  const totalSegments = waypoints.length - 1;
+  const pathInfo = getPathInfo(waypoints);
 
-  // Strict 3D path position interpolation along road centerline waypoints
-  const progressScaled = vehicle.pathProgress * totalSegments;
-  const segmentIndex = Math.min(Math.floor(progressScaled), totalSegments - 1);
-  const segmentProgress = progressScaled - segmentIndex;
-
-  const startPt = waypoints[segmentIndex];
-  const endPt = waypoints[Math.min(segmentIndex + 1, waypoints.length - 1)];
-
-  const newPos = new THREE.Vector3().lerpVectors(startPt, endPt, segmentProgress);
-  newPos.y = 0.01; // Asphalt level
-
-  const dir = new THREE.Vector3().subVectors(endPt, startPt).normalize();
+  // Arc-length parameterized position — consistent speed through turns
+  const { position: newPos, direction: dir } = getArcLengthPosition(
+    waypoints, vehicle.pathProgress, pathInfo
+  );
   const angle = Math.atan2(dir.x, dir.z);
 
   // Check Directional Red / Yellow traffic light stop
   const mustStopAtLight = checkTrafficLightStop({ ...vehicle, position: newPos }, waypoints);
 
-  // Check obstacle / queue ahead
-  const obstacle = getObstacleAhead({ ...vehicle, position: newPos }, allVehicles);
+  // Skip obstacle detection inside junctions — vehicle is committed to clear through
+  const isInsideJunction = JUNCTION_ZONES.some(
+    (zone) => newPos.distanceTo(zone.center) < zone.radius
+  );
+  const obstacle = isInsideJunction
+    ? null
+    : getObstacleAhead({ ...vehicle, position: newPos }, allVehicles);
 
   let targetSpeed = vehicle.maxVelocity;
 
@@ -363,14 +402,8 @@ export function updateVehicle(
 
   const isStopped = newVelocity === 0;
 
-  // Calculate distance & progress
-  let totalLength = 0;
-  for (let i = 0; i < totalSegments; i++) {
-    totalLength += waypoints[i].distanceTo(waypoints[i + 1]);
-  }
-
   const distanceDelta = newVelocity * delta;
-  const progressDelta = distanceDelta / Math.max(totalLength, 1);
+  const progressDelta = distanceDelta / Math.max(pathInfo.totalLength, 1);
   const newProgress = vehicle.pathProgress + progressDelta;
 
   // Despawn when vehicle reaches end of path

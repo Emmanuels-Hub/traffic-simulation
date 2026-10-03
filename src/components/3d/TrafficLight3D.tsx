@@ -1,5 +1,4 @@
-import React, { useRef, useMemo } from 'react';
-import { useFrame } from '@react-three/fiber';
+import React from 'react';
 import { Html } from '@react-three/drei';
 import * as THREE from 'three';
 import type { TrafficLight as TLType } from '../../types';
@@ -26,7 +25,6 @@ export function getDirectionalSignalState(
 }
 
 export const TrafficLight3D: React.FC<TrafficLightProps> = React.memo(({ trafficLight, onClick, isSelected }) => {
-  const glowRef = useRef<THREE.PointLight>(null!);
 
   const currentPhase = trafficLight.phases[trafficLight.currentPhaseIndex];
   const activeDirections = currentPhase?.directions || [];

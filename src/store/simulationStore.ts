@@ -1,5 +1,4 @@
 import { create } from 'zustand';
-import * as THREE from 'three';
 import type {
   SimulationStore,
   SimulationConfig,
@@ -31,7 +30,7 @@ const defaultAnalytics: TrafficAnalytics = {
   throughputHistory: [],
 };
 
-export const useSimulationStore = create<SimulationStore>((set, get) => ({
+export const useSimulationStore = create<SimulationStore>((set) => ({
   vehicles: new Map<string, Vehicle>(),
   trafficLights: new Map<string, TrafficLight>(),
   config: defaultConfig,

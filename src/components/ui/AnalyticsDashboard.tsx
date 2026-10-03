@@ -1,7 +1,7 @@
 import React from 'react';
 import {
   LineChart, Line, AreaChart, Area, BarChart, Bar,
-  XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
+  XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from 'recharts';
 import { useSimulationStore } from '../../store/simulationStore';
 import './AnalyticsDashboard.css';
@@ -206,7 +206,7 @@ export const AnalyticsDashboard: React.FC = () => {
               <YAxis stroke="rgba(255,255,255,0.1)" tick={{ fill: '#666', fontSize: 10 }} />
               <Tooltip contentStyle={customTooltipStyle} />
               <Bar dataKey="count" radius={[4, 4, 0, 0]} name="Count">
-                {stateDistribution.map((entry, idx) => {
+                {stateDistribution.map((_, idx) => {
                   const colors = ['#2ecc71', '#e74c3c', '#f39c12', '#3498db'];
                   return <rect key={idx} fill={colors[idx % colors.length]} />;
                 })}

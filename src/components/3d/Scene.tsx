@@ -1,6 +1,6 @@
-import React, { useEffect, useRef, useCallback } from 'react';
-import { Canvas, useFrame, useThree } from '@react-three/fiber';
-import { OrbitControls, Sky, Stars, Environment, Html, PerspectiveCamera } from '@react-three/drei';
+import React, { useEffect, useRef } from 'react';
+import { Canvas, useFrame } from '@react-three/fiber';
+import { OrbitControls, Sky, Stars, PerspectiveCamera } from '@react-three/drei';
 import * as THREE from 'three';
 import { CityEnvironment } from './CityEnvironment';
 import { Vehicle } from './Vehicle';
@@ -9,9 +9,7 @@ import { useSimulationStore } from '../../store/simulationStore';
 import {
   simulationTick,
   initializeTrafficLights,
-  resetSimulation,
 } from '../../engine/SimulationEngine';
-import { JUNCTIONS } from '../../config/roadNetwork';
 
 // ─── Simulation Loop Component ───────────────────────────────────
 const SimulationLoop: React.FC = () => {
@@ -133,7 +131,7 @@ const Atmosphere: React.FC = () => {
 
       {/* Fog */}
       {weather === 'fog' && (
-        <fog attach="fog" color="#c0c0c0" near={20} far={120} />
+        <fog attach="fog" args={['#c0c0c0', 20, 120]} />
       )}
     </>
   );

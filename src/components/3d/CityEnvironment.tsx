@@ -309,7 +309,7 @@ const Building: React.FC<{
   const windowColor = type === 'park' ? '#27ae60' : '#b8d4e3';
 
   return (
-    <group position={position}>
+    <group position={[position[0], 0, position[2]]}>
       {/* Main structure */}
       <mesh castShadow receiveShadow position={[0, size[1] / 2, 0]}>
         <boxGeometry args={size} />
