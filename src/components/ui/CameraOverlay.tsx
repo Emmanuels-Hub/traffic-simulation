@@ -1,10 +1,9 @@
-import React, { useState, useRef, useMemo } from 'react';
+import React, { useState, useRef } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
 import { PerspectiveCamera } from '@react-three/drei';
 import * as THREE from 'three';
 import { CityEnvironment } from '../3d/CityEnvironment';
-import { Vehicle as Vehicle3D } from '../3d/Vehicle';
-import { TrafficLight3D } from '../3d/TrafficLight3D';
+import { VehiclesRenderer, TrafficLightsRenderer } from '../3d/Scene';
 import { useSimulationStore } from '../../store/simulationStore';
 import { JUNCTIONS } from '../../config/roadNetwork';
 import './CameraOverlay.css';
@@ -24,12 +23,7 @@ const CameraController: React.FC<{
     if (!cameraRef.current) return;
 
     const vehicles = useSimulationStore.getState().vehicles;
-    let targetVehicle = targetVehicleId ? vehicles.get(targetVehicleId) : null;
-
-    // Fallback to first vehicle if selected vehicle disappeared
-    if (!targetVehicle && vehicles.size > 0) {
-      targetVehicle = Array.from(vehicles.values())[0];
-    }
+    const targetVehicle = targetVehicleId ? vehicles.get(targetVehicleId) : undefined;
 
     let desiredPos = new THREE.Vector3(0, 50, 0);
     let desiredLookAt = new THREE.Vector3(0, 0, 0);
@@ -44,6 +38,10 @@ const CameraController: React.FC<{
       const forward = new THREE.Vector3(Math.sin(angle), 0, Math.cos(angle));
       desiredPos = targetVehicle.position.clone().add(forward.clone().multiplyScalar(0.4)).add(new THREE.Vector3(0, 1.3, 0));
       desiredLookAt = targetVehicle.position.clone().add(forward.clone().multiplyScalar(20)).add(new THREE.Vector3(0, 1.3, 0));
+    } else if ((mode === 'follow' || mode === 'driver') && !targetVehicle) {
+      // No vehicle to track yet — hold an overview
+      desiredPos = new THREE.Vector3(60, 45, 60);
+      desiredLookAt = new THREE.Vector3(0, 0, 0);
     } else if (mode.startsWith('J')) {
       const junc = JUNCTIONS.find((j) => j.id === mode);
       if (junc) {
@@ -72,34 +70,20 @@ const CameraController: React.FC<{
 
 // ─── Simplified Scene Renderer for PIP ───────────────────────────
 const PIPScene: React.FC<{ mode: CameraMode; targetVehicleId: string | null }> = ({ mode, targetVehicleId }) => {
-  const vehicles = useSimulationStore((s) => s.vehicles);
-  const trafficLights = useSimulationStore((s) => s.trafficLights);
+  const isNight = useSimulationStore((s) => s.config.timeOfDay < 6 || s.config.timeOfDay > 18.5);
 
   return (
     <>
       <CameraController mode={mode} targetVehicleId={targetVehicleId} />
+      <color attach="background" args={[isNight ? '#05070f' : '#9ec9e8']} />
 
-      <ambientLight intensity={0.5} />
-      <directionalLight position={[40, 60, 40]} intensity={1.0} castShadow />
-      <hemisphereLight color="#87CEEB" groundColor="#4a7c3f" intensity={0.4} />
+      <ambientLight intensity={isNight ? 0.2 : 0.5} />
+      <directionalLight position={[40, 60, 40]} intensity={isNight ? 0.3 : 1.0} />
+      <hemisphereLight color="#87CEEB" groundColor="#4a7c3f" intensity={isNight ? 0.1 : 0.4} />
 
-      <CityEnvironment />
-
-      <group>
-        {Array.from(vehicles.values()).map((vehicle) => (
-          <Vehicle3D
-            key={vehicle.id}
-            vehicle={vehicle}
-            isSelected={vehicle.id === targetVehicleId}
-          />
-        ))}
-      </group>
-
-      <group>
-        {Array.from(trafficLights.values()).map((tl) => (
-          <TrafficLight3D key={tl.id} trafficLight={tl} />
-        ))}
-      </group>
+      <CityEnvironment isNight={isNight} />
+      <VehiclesRenderer interactive={false} highlightId={targetVehicleId} />
+      <TrafficLightsRenderer interactive={false} showLabels={false} />
     </>
   );
 };
@@ -109,23 +93,22 @@ export const CameraOverlay: React.FC = () => {
   const [cameraMode, setCameraMode] = useState<CameraMode>('follow');
   const [sizeMode, setSizeMode] = useState<'normal' | 'large' | 'minimized'>('normal');
 
-  const selectedVehicle = useSimulationStore((s) => s.selectedVehicle);
   const setSelectedVehicle = useSimulationStore((s) => s.setSelectedVehicle);
-  const vehicles = useSimulationStore((s) => s.vehicles);
 
-  const activeVehicle = useMemo(() => {
-    if (selectedVehicle) {
-      return vehicles.get(selectedVehicle) || null;
+  // Track the selected vehicle, or fall back to the first one on the road
+  const activeVehicle = useSimulationStore((s) => {
+    if (s.selectedVehicle) {
+      const v = s.vehicles.get(s.selectedVehicle);
+      if (v) return v;
     }
-    return vehicles.size > 0 ? Array.from(vehicles.values())[0] : null;
-  }, [selectedVehicle, vehicles]);
+    return s.vehicles.values().next().value ?? null;
+  });
 
   const handleNextVehicle = () => {
-    const vArray = Array.from(vehicles.values());
-    if (vArray.length === 0) return;
-    const currentIndex = vArray.findIndex((v) => v.id === selectedVehicle);
-    const nextVehicle = vArray[(currentIndex + 1) % vArray.length];
-    setSelectedVehicle(nextVehicle.id);
+    const ids = Array.from(useSimulationStore.getState().vehicles.keys());
+    if (ids.length === 0) return;
+    const currentIndex = activeVehicle ? ids.indexOf(activeVehicle.id) : -1;
+    setSelectedVehicle(ids[(currentIndex + 1) % ids.length]);
   };
 
   if (sizeMode === 'minimized') {
@@ -193,7 +176,7 @@ export const CameraOverlay: React.FC = () => {
 
       {/* 3D Viewport Inset */}
       <div className="pip-viewport">
-        <Canvas gl={{ antialias: true }} style={{ width: '100%', height: '100%' }}>
+        <Canvas gl={{ antialias: true }} dpr={[1, 1.5]} style={{ width: '100%', height: '100%' }}>
           <PIPScene mode={cameraMode} targetVehicleId={activeVehicle?.id || null} />
         </Canvas>
 
@@ -204,7 +187,7 @@ export const CameraOverlay: React.FC = () => {
         {(cameraMode === 'follow' || cameraMode === 'driver') && activeVehicle && (
           <div className="pip-info-overlay">
             <div className="pip-vehicle-badge" style={{ backgroundColor: activeVehicle.color }}>
-              {activeVehicle.type.toUpperCase()} #{activeVehicle.id.slice(-4)}
+              {activeVehicle.type.toUpperCase()} #{activeVehicle.id.replace('v_', '')}
             </div>
             <div className="pip-speed">
               {(activeVehicle.velocity * 3.6).toFixed(0)} <span className="unit">km/h</span>

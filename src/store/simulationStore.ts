@@ -4,8 +4,8 @@ import type {
   SimulationConfig,
   TrafficAnalytics,
   Vehicle,
-  TrafficLight,
 } from '../types';
+import { createInitialTrafficLights } from '../config/roadNetwork';
 
 const defaultConfig: SimulationConfig = {
   maxVehicles: 30,
@@ -24,6 +24,8 @@ const defaultAnalytics: TrafficAnalytics = {
   throughput: 0,
   congestionLevel: 0,
   junctionStats: [],
+  vehicleTypeCounts: { sedan: 0, suv: 0, truck: 0, bus: 0, sports: 0 },
+  vehicleStateCounts: { moving: 0, stopped: 0, waiting: 0, turning: 0 },
   speedHistory: [],
   vehicleCountHistory: [],
   congestionHistory: [],
@@ -32,7 +34,8 @@ const defaultAnalytics: TrafficAnalytics = {
 
 export const useSimulationStore = create<SimulationStore>((set) => ({
   vehicles: new Map<string, Vehicle>(),
-  trafficLights: new Map<string, TrafficLight>(),
+  trafficLights: createInitialTrafficLights(),
+  simTime: 0,
   config: defaultConfig,
   analytics: defaultAnalytics,
   selectedJunction: null,
@@ -43,40 +46,6 @@ export const useSimulationStore = create<SimulationStore>((set) => ({
     set((state) => ({
       config: { ...state.config, ...updates },
     })),
-
-  addVehicle: (vehicle) =>
-    set((state) => {
-      const newVehicles = new Map(state.vehicles);
-      newVehicles.set(vehicle.id, vehicle);
-      return { vehicles: newVehicles };
-    }),
-
-  removeVehicle: (id) =>
-    set((state) => {
-      const newVehicles = new Map(state.vehicles);
-      newVehicles.delete(id);
-      return { vehicles: newVehicles };
-    }),
-
-  updateVehicle: (id, updates) =>
-    set((state) => {
-      const newVehicles = new Map(state.vehicles);
-      const vehicle = newVehicles.get(id);
-      if (vehicle) {
-        newVehicles.set(id, { ...vehicle, ...updates });
-      }
-      return { vehicles: newVehicles };
-    }),
-
-  updateTrafficLight: (id, updates) =>
-    set((state) => {
-      const newLights = new Map(state.trafficLights);
-      const light = newLights.get(id);
-      if (light) {
-        newLights.set(id, { ...light, ...updates });
-      }
-      return { trafficLights: newLights };
-    }),
 
   setSelectedJunction: (id) => set({ selectedJunction: id }),
   setSelectedVehicle: (id) => set({ selectedVehicle: id }),
@@ -89,35 +58,40 @@ export const useSimulationStore = create<SimulationStore>((set) => ({
 
   toggleTrafficLightMode: (id) =>
     set((state) => {
+      const light = state.trafficLights.get(id);
+      if (!light) return {};
       const newLights = new Map(state.trafficLights);
-      const light = newLights.get(id);
-      if (light) {
-        newLights.set(id, {
-          ...light,
-          mode: light.mode === 'auto' ? 'manual' : 'auto',
-        });
-      }
+      const toAuto = light.mode === 'manual';
+      newLights.set(id, {
+        ...light,
+        mode: toAuto ? 'auto' : 'manual',
+        // Resuming auto restarts the current phase so it gets its full duration
+        phaseEndsAt: toAuto
+          ? state.simTime + light.phases[light.currentPhaseIndex].duration
+          : light.phaseEndsAt,
+      });
       return { trafficLights: newLights };
     }),
 
   cycleTrafficLight: (id) =>
     set((state) => {
+      const light = state.trafficLights.get(id);
+      if (!light || light.mode !== 'manual') return {};
       const newLights = new Map(state.trafficLights);
-      const light = newLights.get(id);
-      if (light && light.mode === 'manual') {
-        const nextIndex = (light.currentPhaseIndex + 1) % light.phases.length;
-        newLights.set(id, {
-          ...light,
-          currentPhaseIndex: nextIndex,
-          timer: light.phases[nextIndex].duration,
-        });
-      }
+      const nextIndex = (light.currentPhaseIndex + 1) % light.phases.length;
+      newLights.set(id, {
+        ...light,
+        currentPhaseIndex: nextIndex,
+        phaseEndsAt: state.simTime + light.phases[nextIndex].duration,
+      });
       return { trafficLights: newLights };
     }),
 
   reset: () =>
     set({
       vehicles: new Map(),
+      trafficLights: createInitialTrafficLights(),
+      simTime: 0,
       analytics: defaultAnalytics,
       selectedJunction: null,
       selectedVehicle: null,

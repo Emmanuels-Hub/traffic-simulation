@@ -38,16 +38,16 @@
 }
 
 /* ─── Toggle Button ──────────────────────────────────────────── */
+/* Kept inside the panel: the panel scrolls (overflow), which clips anything outside it */
 .panel-toggle {
   position: absolute;
-  top: 16px;
-  left: -32px;
+  top: 12px;
+  left: 4px;
   width: 32px;
   height: 32px;
   background: rgba(12, 14, 22, 0.92);
   border: 1px solid rgba(255, 255, 255, 0.08);
-  border-right: none;
-  border-radius: 8px 0 0 8px;
+  border-radius: 8px;
   color: #888;
   font-size: 12px;
   cursor: pointer;
@@ -65,7 +65,7 @@
 
 /* ─── Header ─────────────────────────────────────────────────── */
 .panel-header {
-  padding: 16px 20px;
+  padding: 16px 20px 16px 44px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.06);
 }
 

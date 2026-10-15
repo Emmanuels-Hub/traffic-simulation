@@ -1,31 +1,14 @@
 import * as THREE from 'three';
 
 // ─── Road Network Types ──────────────────────────────────────────
-export interface RoadSegment {
-  id: string;
-  start: THREE.Vector3;
-  end: THREE.Vector3;
-  width: number;
-  lanes: number;
-  speedLimit: number;
-  type: 'straight' | 'curve' | 'uturn';
-  controlPoints?: THREE.Vector3[]; // For curves
-}
+export type Direction = 'north' | 'south' | 'east' | 'west';
 
 export interface Junction {
   id: string;
   position: THREE.Vector3;
-  type: 'cross' | 't-junction' | 'square' | 'uturn';
-  connectedRoads: string[];
-  trafficLight?: TrafficLight;
+  type: 'cross' | 't-junction';
+  trafficLight: TrafficLight;
   radius: number;
-}
-
-export interface Lane {
-  roadId: string;
-  laneIndex: number;
-  direction: THREE.Vector3;
-  path: THREE.Vector3[];
 }
 
 // ─── Traffic Light Types ─────────────────────────────────────────
@@ -34,7 +17,7 @@ export type LightState = 'red' | 'yellow' | 'green';
 export interface TrafficLightPhase {
   state: LightState;
   duration: number; // in seconds
-  directions: string[]; // which road directions are active
+  directions: Direction[]; // travel directions that get this phase's state (others are red)
 }
 
 export interface TrafficLight {
@@ -42,35 +25,39 @@ export interface TrafficLight {
   junctionId: string;
   phases: TrafficLightPhase[];
   currentPhaseIndex: number;
-  timer: number;
+  phaseEndsAt: number; // simulation time (s) when the current phase ends in auto mode
   mode: 'auto' | 'manual';
   position: THREE.Vector3;
-  rotation: number;
 }
 
 // ─── Vehicle Types ──────────────────────────────────────────────
 export type VehicleType = 'sedan' | 'suv' | 'truck' | 'bus' | 'sports';
+export type VehicleState = 'moving' | 'stopped' | 'waiting' | 'turning';
+export type StopReason = 'signal' | 'yield' | 'blocked-exit' | 'vehicle' | 'curve' | null;
 
 export interface Vehicle {
   id: string;
   type: VehicleType;
   position: THREE.Vector3;
   rotation: THREE.Euler;
-  velocity: number;
-  maxVelocity: number;
-  acceleration: number;
-  currentRoadId: string;
-  currentLane: number;
-  pathProgress: number; // 0-1 along current road
-  route: string[]; // sequence of road IDs
-  routeIndex: number;
+  velocity: number; // m/s
+  maxVelocity: number; // desired free-road speed (m/s)
+  acceleration: number; // max acceleration (m/s²)
+  currentAccel: number; // acceleration applied in the last step (m/s², negative = braking)
+  routeId: string;
+  pathDistance: number; // arc length travelled along the route path (m)
+  nextMovementIndex: number; // first junction movement on the route not yet cleared
+  committedMovementIndex: number; // movement the vehicle decided to proceed through on yellow/red (-1 = none)
   color: string;
   length: number;
   width: number;
-  state: 'moving' | 'stopped' | 'waiting' | 'turning';
-  waitTime: number;
+  state: VehicleState;
+  waitTime: number; // accumulated time spent queued during this trip (s)
+  lineWait: number; // continuous time spent stopped at the head of a junction queue (s)
   totalDistance: number;
   targetVelocity: number;
+  stopReason: StopReason; // constraint currently limiting the vehicle's speed
+  blockedBy: string | null; // vehicle responsible for the constraint, if any
 }
 
 // ─── Simulation Types ───────────────────────────────────────────
@@ -88,9 +75,11 @@ export interface TrafficAnalytics {
   totalVehicles: number;
   avgSpeed: number;
   avgWaitTime: number;
-  throughput: number; // vehicles per minute passing through
+  throughput: number; // vehicles per minute completing their trip
   congestionLevel: number; // 0-1
   junctionStats: JunctionStats[];
+  vehicleTypeCounts: Record<VehicleType, number>;
+  vehicleStateCounts: Record<VehicleState, number>;
   speedHistory: DataPoint[];
   vehicleCountHistory: DataPoint[];
   congestionHistory: DataPoint[];
@@ -101,7 +90,7 @@ export interface JunctionStats {
   junctionId: string;
   vehiclesWaiting: number;
   avgWaitTime: number;
-  throughput: number;
+  throughput: number; // vehicles per minute clearing the junction
   congestionLevel: number;
 }
 
@@ -115,18 +104,15 @@ export interface SimulationStore {
   // State
   vehicles: Map<string, Vehicle>;
   trafficLights: Map<string, TrafficLight>;
+  simTime: number;
   config: SimulationConfig;
   analytics: TrafficAnalytics;
   selectedJunction: string | null;
   selectedVehicle: string | null;
   viewMode: 'simulation' | 'analytics';
-  
+
   // Actions
   setConfig: (config: Partial<SimulationConfig>) => void;
-  addVehicle: (vehicle: Vehicle) => void;
-  removeVehicle: (id: string) => void;
-  updateVehicle: (id: string, updates: Partial<Vehicle>) => void;
-  updateTrafficLight: (id: string, updates: Partial<TrafficLight>) => void;
   setSelectedJunction: (id: string | null) => void;
   setSelectedVehicle: (id: string | null) => void;
   setViewMode: (mode: 'simulation' | 'analytics') => void;

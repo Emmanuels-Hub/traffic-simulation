@@ -1,8 +1,16 @@
 import React, { useState } from 'react';
 import { useSimulationStore } from '../../store/simulationStore';
 import { resetSimulation } from '../../engine/SimulationEngine';
-import { JUNCTIONS } from '../../config/roadNetwork';
+import { JUNCTIONS, getJunctionApproaches } from '../../config/roadNetwork';
+import type { TrafficLight } from '../../types';
 import './ControlPanel.css';
+
+// Isolated so only this line re-renders as simulation time advances
+const PhaseCountdown: React.FC<{ light: TrafficLight }> = ({ light }) => {
+  const simTime = useSimulationStore((s) => s.simTime);
+  if (light.mode === 'manual') return <div className="tl-timer">Manual hold — press Cycle</div>;
+  return <div className="tl-timer">{Math.max(0, light.phaseEndsAt - simTime).toFixed(1)}s remaining</div>;
+};
 
 export const ControlPanel: React.FC = () => {
   const [isCollapsed, setIsCollapsed] = useState(false);
@@ -10,7 +18,7 @@ export const ControlPanel: React.FC = () => {
 
   const config = useSimulationStore((s) => s.config);
   const setConfig = useSimulationStore((s) => s.setConfig);
-  const vehicles = useSimulationStore((s) => s.vehicles);
+  const vehicleCount = useSimulationStore((s) => s.vehicles.size);
   const trafficLights = useSimulationStore((s) => s.trafficLights);
   const analytics = useSimulationStore((s) => s.analytics);
   const selectedJunction = useSimulationStore((s) => s.selectedJunction);
@@ -26,6 +34,7 @@ export const ControlPanel: React.FC = () => {
   const selectedTL = selectedJunctionData?.trafficLight
     ? trafficLights.get(selectedJunctionData.trafficLight.id)
     : null;
+  const selectedPhase = selectedTL ? selectedTL.phases[selectedTL.currentPhaseIndex] : null;
 
   return (
     <div className={`control-panel ${isCollapsed ? 'collapsed' : ''}`}>
@@ -70,7 +79,7 @@ export const ControlPanel: React.FC = () => {
           {/* Quick Stats */}
           <div className="quick-stats">
             <div className="stat-card">
-              <span className="stat-value">{vehicles.size}</span>
+              <span className="stat-value">{vehicleCount}</span>
               <span className="stat-label">Vehicles</span>
             </div>
             <div className="stat-card">
@@ -217,7 +226,7 @@ export const ControlPanel: React.FC = () => {
                           <span className="junction-id">{junction.id}</span>
                           <span className="junction-type">{junction.type}</span>
                           {phase && (
-                            <span className={`light-indicator ${phase.state}`}>
+                            <span className={`light-indicator ${phase.directions.length === 0 ? 'red' : phase.state}`}>
                               ●
                             </span>
                           )}
@@ -228,7 +237,7 @@ export const ControlPanel: React.FC = () => {
                 </div>
 
                 {/* Selected Junction Controls */}
-                {selectedJunctionData && selectedTL && (
+                {selectedJunctionData && selectedTL && selectedPhase && (
                   <div className="control-group junction-detail">
                     <label className="control-label">
                       {selectedJunctionData.id} — {selectedJunctionData.type}
@@ -236,21 +245,21 @@ export const ControlPanel: React.FC = () => {
 
                     <div className="tl-status">
                       <div className="tl-display">
-                        <div className={`tl-light red ${selectedTL.phases[selectedTL.currentPhaseIndex].state === 'red' ? 'active' : ''}`} />
-                        <div className={`tl-light yellow ${selectedTL.phases[selectedTL.currentPhaseIndex].state === 'yellow' ? 'active' : ''}`} />
-                        <div className={`tl-light green ${selectedTL.phases[selectedTL.currentPhaseIndex].state === 'green' ? 'active' : ''}`} />
+                        <div className={`tl-light red ${selectedPhase.state === 'red' || selectedPhase.directions.length === 0 ? 'active' : ''}`} />
+                        <div className={`tl-light yellow ${selectedPhase.state === 'yellow' ? 'active' : ''}`} />
+                        <div className={`tl-light green ${selectedPhase.state === 'green' ? 'active' : ''}`} />
                       </div>
                       <div className="tl-info">
                         <div className="tl-state">
-                          {selectedTL.phases[selectedTL.currentPhaseIndex].directions.length > 0
-                            ? `${selectedTL.phases[selectedTL.currentPhaseIndex].directions.join('/').toUpperCase()} ${selectedTL.phases[selectedTL.currentPhaseIndex].state.toUpperCase()}`
+                          {selectedPhase.directions.length > 0
+                            ? `${selectedPhase.directions.join('/').toUpperCase()}BOUND ${selectedPhase.state.toUpperCase()}`
                             : 'ALL RED CLEARANCE'}
                         </div>
-                        <div className="tl-timer">{selectedTL.timer.toFixed(1)}s remaining</div>
+                        <PhaseCountdown light={selectedTL} />
                         <div className="tl-dirs">
-                          {selectedTL.phases[selectedTL.currentPhaseIndex].directions.length > 0
-                            ? `🟢 Active: ${selectedTL.phases[selectedTL.currentPhaseIndex].directions.join(', ').toUpperCase()} | 🔴 Red: ${['north','south','east','west'].filter(d => !selectedTL.phases[selectedTL.currentPhaseIndex].directions.includes(d)).join(', ').toUpperCase()}`
-                            : '🔴 All Directions RED (Clearance)'}
+                          {selectedPhase.directions.length > 0
+                            ? `🟢 Go: ${selectedPhase.directions.join(', ').toUpperCase()} | 🔴 Stop: ${getJunctionApproaches(selectedTL.junctionId).filter((d) => !selectedPhase.directions.includes(d)).join(', ').toUpperCase()}`
+                            : '🔴 All approaches RED (clearance)'}
                         </div>
                       </div>
                     </div>

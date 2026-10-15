@@ -1,379 +1,208 @@
 import * as THREE from 'three';
-import type { Junction, TrafficLightPhase } from '../types';
+import type { Direction, Junction, TrafficLight, TrafficLightPhase, VehicleType } from '../types';
 
 // ─── City Layout Constants ───────────────────────────────────────
-// The city is laid out on a grid. Units are in "meters" for realism.
-// Origin (0,0,0) is the center of the city.
+// Units are metres. Origin is the city centre; -Z is north, +X is east.
+// Traffic drives on the LEFT: each lane centre is offset LANE_OFFSET to
+// the left of the road centre line, relative to the travel direction.
 
 export const ROAD_WIDTH = 8;
-export const LANE_WIDTH = 3.5;
-export const SIDEWALK_WIDTH = 2;
+export const LANE_OFFSET = 2;
+export const SIDEWALK_WIDTH = 1.5;
 export const BLOCK_SIZE = 60; // Distance between intersections
-export const CITY_BOUNDS = 120; // Half-extent of the city
-
-// ─── Road Path Definitions ──────────────────────────────────────
-// Each route is a sequence of waypoints that vehicles follow.
-// Roads form a connected network with 4 main junctions + T-junction + U-turn.
+export const STOP_LINE_OFFSET = 8; // Stop line distance from junction centre
+export const CROSSWALK_START = ROAD_WIDTH / 2 + 0.5;
+export const CROSSWALK_END = STOP_LINE_OFFSET - 0.5;
+export const JUNCTION_EXIT_OFFSET = ROAD_WIDTH / 2 + 1; // Point where a vehicle's rear has cleared the junction box
 
 /*
-  City Layout (top-down view):
-  
-       N
-       |
-  W ---+--- E
-       |
-       S
+  City Layout (top-down view, north up):
 
-  Junction layout:
-  
-  J1 -------- J2
-  |            |
-  |    CITY    |     J5 (T-junction)
-  |            |    /
-  J3 -------- J4 --
-                \
-                 U-turn zone
-                 
-  J1 = NW intersection (cross)
-  J2 = NE intersection (cross)  
-  J3 = SW intersection (cross)
-  J4 = SE intersection (cross + T-junction connection)
-  J5 = T-junction (east side)
-  U-turn at the south-east extension
+   XN1          XN2
+    |            |
+  XW1 ─ J1 ──── J2 ──── CNE
+        |        |        |
+        |  CITY  |       J5 ── XE5   (T-junction)
+        |        |        |
+  XW3 ─ J3 ──── J4 ──── CSE
+        |        |
+       XS3      UT  (U-turn bulb)
 */
 
-// Junction positions
-export const JUNCTION_POSITIONS: Record<string, THREE.Vector3> = {
-  J1: new THREE.Vector3(-BLOCK_SIZE / 2, 0.01, -BLOCK_SIZE / 2),
-  J2: new THREE.Vector3(BLOCK_SIZE / 2, 0.01, -BLOCK_SIZE / 2),
-  J3: new THREE.Vector3(-BLOCK_SIZE / 2, 0.01, BLOCK_SIZE / 2),
-  J4: new THREE.Vector3(BLOCK_SIZE / 2, 0.01, BLOCK_SIZE / 2),
-  J5: new THREE.Vector3(BLOCK_SIZE * 1.1, 0.01, 0), // T-junction east
+const H = BLOCK_SIZE / 2;
+const T_X = BLOCK_SIZE * 1.1;
+const EXIT = 75;
+
+export type NodeKind = 'junction' | 'bend' | 'exit' | 'uturn';
+
+export interface NetworkNode {
+  id: string;
+  kind: NodeKind;
+  position: THREE.Vector3;
+}
+
+const node = (id: string, kind: NodeKind, x: number, z: number): NetworkNode => ({
+  id, kind, position: new THREE.Vector3(x, 0, z),
+});
+
+export const NODES: Record<string, NetworkNode> = Object.fromEntries([
+  node('J1', 'junction', -H, -H),
+  node('J2', 'junction', H, -H),
+  node('J3', 'junction', -H, H),
+  node('J4', 'junction', H, H),
+  node('J5', 'junction', T_X, 0),
+  node('CNE', 'bend', T_X, -H),
+  node('CSE', 'bend', T_X, H),
+  node('UT', 'uturn', H, BLOCK_SIZE),
+  node('XW1', 'exit', -EXIT, -H),
+  node('XN1', 'exit', -H, -EXIT),
+  node('XN2', 'exit', H, -EXIT),
+  node('XW3', 'exit', -EXIT, H),
+  node('XS3', 'exit', -H, EXIT),
+  node('XE5', 'exit', T_X + 40, 0),
+].map((n) => [n.id, n]));
+
+// Two-way road segments between nodes (all axis-aligned)
+export const EDGES: [string, string][] = [
+  ['J1', 'J2'], ['J3', 'J4'], ['J1', 'J3'], ['J2', 'J4'],
+  ['J2', 'CNE'], ['CNE', 'J5'], ['J4', 'CSE'], ['CSE', 'J5'],
+  ['J5', 'XE5'], ['J4', 'UT'],
+  ['J1', 'XW1'], ['J1', 'XN1'], ['J2', 'XN2'], ['J3', 'XW3'], ['J3', 'XS3'],
+];
+
+// U-turn turning circle at the end of J4's south arm
+export const UTURN_BULB = {
+  center: new THREE.Vector3(H, 0, BLOCK_SIZE + 10),
+  radius: 10,
+  islandRadius: 3.5,
+  laneRadius: 6.5,
 };
 
-// ─── Road Segments (center paths for each road) ─────────────────
-export interface RoadPath {
-  id: string;
-  name: string;
-  waypoints: THREE.Vector3[];
-  bidirectional: boolean;
-  speedLimit: number;
-  type: 'main' | 'secondary' | 'connector';
+// ─── Direction helpers ───────────────────────────────────────────
+export const DIRECTION_VECTORS: Record<Direction, THREE.Vector3> = {
+  north: new THREE.Vector3(0, 0, -1),
+  south: new THREE.Vector3(0, 0, 1),
+  east: new THREE.Vector3(1, 0, 0),
+  west: new THREE.Vector3(-1, 0, 0),
+};
+
+export function directionName(d: THREE.Vector3): Direction {
+  if (Math.abs(d.x) > Math.abs(d.z)) return d.x > 0 ? 'east' : 'west';
+  return d.z < 0 ? 'north' : 'south';
 }
 
-export const ROAD_PATHS: RoadPath[] = [
-  // Main square loop roads (forming the square)
-  {
-    id: 'R_N', name: 'North Road (J1→J2)',
-    waypoints: [
-      new THREE.Vector3(-BLOCK_SIZE / 2, 0.01, -BLOCK_SIZE / 2),
-      new THREE.Vector3(BLOCK_SIZE / 2, 0.01, -BLOCK_SIZE / 2),
-    ],
-    bidirectional: true, speedLimit: 50, type: 'main',
-  },
-  {
-    id: 'R_S', name: 'South Road (J3→J4)',
-    waypoints: [
-      new THREE.Vector3(-BLOCK_SIZE / 2, 0.01, BLOCK_SIZE / 2),
-      new THREE.Vector3(BLOCK_SIZE / 2, 0.01, BLOCK_SIZE / 2),
-    ],
-    bidirectional: true, speedLimit: 50, type: 'main',
-  },
-  {
-    id: 'R_W', name: 'West Road (J1→J3)',
-    waypoints: [
-      new THREE.Vector3(-BLOCK_SIZE / 2, 0.01, -BLOCK_SIZE / 2),
-      new THREE.Vector3(-BLOCK_SIZE / 2, 0.01, BLOCK_SIZE / 2),
-    ],
-    bidirectional: true, speedLimit: 50, type: 'main',
-  },
-  {
-    id: 'R_E', name: 'East Road (J2→J4)',
-    waypoints: [
-      new THREE.Vector3(BLOCK_SIZE / 2, 0.01, -BLOCK_SIZE / 2),
-      new THREE.Vector3(BLOCK_SIZE / 2, 0.01, BLOCK_SIZE / 2),
-    ],
-    bidirectional: true, speedLimit: 50, type: 'main',
-  },
-  // T-junction connector (J2 → J5 and J4 → J5)
-  {
-    id: 'R_T_TOP', name: 'T-Junction Top (J2→J5)',
-    waypoints: [
-      new THREE.Vector3(BLOCK_SIZE / 2, 0.01, -BLOCK_SIZE / 2),
-      new THREE.Vector3(BLOCK_SIZE * 1.1, 0.01, -BLOCK_SIZE / 2),
-      new THREE.Vector3(BLOCK_SIZE * 1.1, 0.01, 0),
-    ],
-    bidirectional: true, speedLimit: 40, type: 'secondary',
-  },
-  {
-    id: 'R_T_BOT', name: 'T-Junction Bottom (J4→J5)',
-    waypoints: [
-      new THREE.Vector3(BLOCK_SIZE / 2, 0.01, BLOCK_SIZE / 2),
-      new THREE.Vector3(BLOCK_SIZE * 1.1, 0.01, BLOCK_SIZE / 2),
-      new THREE.Vector3(BLOCK_SIZE * 1.1, 0.01, 0),
-    ],
-    bidirectional: true, speedLimit: 40, type: 'secondary',
-  },
-  // U-turn road (south extension from J4)
-  {
-    id: 'R_UTURN', name: 'U-Turn Road',
-    waypoints: [
-      new THREE.Vector3(BLOCK_SIZE / 2, 0.01, BLOCK_SIZE / 2),
-      new THREE.Vector3(BLOCK_SIZE / 2, 0.01, BLOCK_SIZE),
-      new THREE.Vector3(BLOCK_SIZE / 2 + 15, 0.01, BLOCK_SIZE + 12),
-      new THREE.Vector3(BLOCK_SIZE / 2 + 25, 0.01, BLOCK_SIZE),
-      new THREE.Vector3(BLOCK_SIZE / 2 + 25, 0.01, BLOCK_SIZE / 2),
-      new THREE.Vector3(BLOCK_SIZE / 2, 0.01, BLOCK_SIZE / 2),
-    ],
-    bidirectional: false, speedLimit: 30, type: 'connector',
-  },
-];
-
-// ─── Route Definitions (sequences of roads vehicles can take) ────
-export interface Route {
-  id: string;
-  name: string;
-  // Waypoints the vehicle follows from start to end
-  waypoints: THREE.Vector3[];
+/** Unit vector pointing to the driver's left for travel direction `d`. */
+export function leftOf(d: THREE.Vector3): THREE.Vector3 {
+  return new THREE.Vector3(d.z, 0, -d.x);
 }
 
-// Pre-computed routes through the city
-export const ROUTES: Route[] = [
-  // Clockwise loop around the square
-  {
-    id: 'ROUTE_CW',
-    name: 'Clockwise Square Loop',
-    waypoints: [
-      new THREE.Vector3(-BLOCK_SIZE / 2 - 20, 0.01, -BLOCK_SIZE / 2 - 2),
-      new THREE.Vector3(-BLOCK_SIZE / 2, 0.01, -BLOCK_SIZE / 2 - 2),
-      new THREE.Vector3(BLOCK_SIZE / 2, 0.01, -BLOCK_SIZE / 2 - 2),
-      new THREE.Vector3(BLOCK_SIZE / 2 + 2, 0.01, -BLOCK_SIZE / 2),
-      new THREE.Vector3(BLOCK_SIZE / 2 + 2, 0.01, BLOCK_SIZE / 2),
-      new THREE.Vector3(BLOCK_SIZE / 2, 0.01, BLOCK_SIZE / 2 + 2),
-      new THREE.Vector3(-BLOCK_SIZE / 2, 0.01, BLOCK_SIZE / 2 + 2),
-      new THREE.Vector3(-BLOCK_SIZE / 2 - 2, 0.01, BLOCK_SIZE / 2),
-      new THREE.Vector3(-BLOCK_SIZE / 2 - 2, 0.01, -BLOCK_SIZE / 2),
-      new THREE.Vector3(-BLOCK_SIZE / 2, 0.01, -BLOCK_SIZE / 2 - 2),
-      new THREE.Vector3(BLOCK_SIZE / 2 + 20, 0.01, -BLOCK_SIZE / 2 - 2),
-    ],
-  },
-  // Counter-clockwise loop
-  {
-    id: 'ROUTE_CCW',
-    name: 'Counter-clockwise Square Loop',
-    waypoints: [
-      new THREE.Vector3(-BLOCK_SIZE / 2 - 20, 0.01, -BLOCK_SIZE / 2 + 2),
-      new THREE.Vector3(-BLOCK_SIZE / 2, 0.01, -BLOCK_SIZE / 2 + 2),
-      new THREE.Vector3(-BLOCK_SIZE / 2 + 2, 0.01, -BLOCK_SIZE / 2),
-      new THREE.Vector3(-BLOCK_SIZE / 2 + 2, 0.01, BLOCK_SIZE / 2),
-      new THREE.Vector3(-BLOCK_SIZE / 2, 0.01, BLOCK_SIZE / 2 - 2),
-      new THREE.Vector3(BLOCK_SIZE / 2, 0.01, BLOCK_SIZE / 2 - 2),
-      new THREE.Vector3(BLOCK_SIZE / 2 - 2, 0.01, BLOCK_SIZE / 2),
-      new THREE.Vector3(BLOCK_SIZE / 2 - 2, 0.01, -BLOCK_SIZE / 2),
-      new THREE.Vector3(BLOCK_SIZE / 2, 0.01, -BLOCK_SIZE / 2 + 2),
-      new THREE.Vector3(BLOCK_SIZE / 2 + 20, 0.01, -BLOCK_SIZE / 2 + 2),
-    ],
-  },
-  // North to South through-route (West side)
-  {
-    id: 'ROUTE_NS_W',
-    name: 'North-South West',
-    waypoints: [
-      new THREE.Vector3(-BLOCK_SIZE / 2 + 2, 0.01, -BLOCK_SIZE / 2 - 25),
-      new THREE.Vector3(-BLOCK_SIZE / 2 + 2, 0.01, -BLOCK_SIZE / 2),
-      new THREE.Vector3(-BLOCK_SIZE / 2 + 2, 0.01, BLOCK_SIZE / 2),
-      new THREE.Vector3(-BLOCK_SIZE / 2 + 2, 0.01, BLOCK_SIZE / 2 + 25),
-    ],
-  },
-  // South to North through-route (West side)
-  {
-    id: 'ROUTE_SN_W',
-    name: 'South-North West',
-    waypoints: [
-      new THREE.Vector3(-BLOCK_SIZE / 2 - 2, 0.01, BLOCK_SIZE / 2 + 25),
-      new THREE.Vector3(-BLOCK_SIZE / 2 - 2, 0.01, BLOCK_SIZE / 2),
-      new THREE.Vector3(-BLOCK_SIZE / 2 - 2, 0.01, -BLOCK_SIZE / 2),
-      new THREE.Vector3(-BLOCK_SIZE / 2 - 2, 0.01, -BLOCK_SIZE / 2 - 25),
-    ],
-  },
-  // West to East through-route (North side)
-  {
-    id: 'ROUTE_WE_N',
-    name: 'West-East North',
-    waypoints: [
-      new THREE.Vector3(-BLOCK_SIZE / 2 - 25, 0.01, -BLOCK_SIZE / 2 - 2),
-      new THREE.Vector3(-BLOCK_SIZE / 2, 0.01, -BLOCK_SIZE / 2 - 2),
-      new THREE.Vector3(BLOCK_SIZE / 2, 0.01, -BLOCK_SIZE / 2 - 2),
-      new THREE.Vector3(BLOCK_SIZE / 2 + 25, 0.01, -BLOCK_SIZE / 2 - 2),
-    ],
-  },
-  // East to West through-route (North side)
-  {
-    id: 'ROUTE_EW_N',
-    name: 'East-West North',
-    waypoints: [
-      new THREE.Vector3(BLOCK_SIZE / 2 + 25, 0.01, -BLOCK_SIZE / 2 + 2),
-      new THREE.Vector3(BLOCK_SIZE / 2, 0.01, -BLOCK_SIZE / 2 + 2),
-      new THREE.Vector3(-BLOCK_SIZE / 2, 0.01, -BLOCK_SIZE / 2 + 2),
-      new THREE.Vector3(-BLOCK_SIZE / 2 - 25, 0.01, -BLOCK_SIZE / 2 + 2),
-    ],
-  },
-  // West to T-junction route
-  {
-    id: 'ROUTE_W_TO_T',
-    name: 'West to T-Junction',
-    waypoints: [
-      new THREE.Vector3(-BLOCK_SIZE / 2 - 25, 0.01, -BLOCK_SIZE / 2 - 2),
-      new THREE.Vector3(-BLOCK_SIZE / 2, 0.01, -BLOCK_SIZE / 2 - 2),
-      new THREE.Vector3(BLOCK_SIZE / 2, 0.01, -BLOCK_SIZE / 2 - 2),
-      new THREE.Vector3(BLOCK_SIZE / 2 + 2, 0.01, -BLOCK_SIZE / 2),
-      new THREE.Vector3(BLOCK_SIZE / 2 + 2, 0.01, -BLOCK_SIZE / 4),
-      new THREE.Vector3(BLOCK_SIZE * 1.1 - 2, 0.01, -BLOCK_SIZE / 4),
-      new THREE.Vector3(BLOCK_SIZE * 1.1 - 2, 0.01, 0),
-      new THREE.Vector3(BLOCK_SIZE * 1.1, 0.01, 2),
-      new THREE.Vector3(BLOCK_SIZE * 1.1 + 2, 0.01, 0),
-      new THREE.Vector3(BLOCK_SIZE * 1.1 + 2, 0.01, BLOCK_SIZE / 4),
-      new THREE.Vector3(BLOCK_SIZE / 2 + 2, 0.01, BLOCK_SIZE / 4),
-      new THREE.Vector3(BLOCK_SIZE / 2 + 2, 0.01, BLOCK_SIZE / 2),
-      new THREE.Vector3(BLOCK_SIZE / 2, 0.01, BLOCK_SIZE / 2 + 2),
-      new THREE.Vector3(-BLOCK_SIZE / 2, 0.01, BLOCK_SIZE / 2 + 2),
-      new THREE.Vector3(-BLOCK_SIZE / 2 - 25, 0.01, BLOCK_SIZE / 2 + 2),
-    ],
-  },
-  // U-turn route from J4
-  {
-    id: 'ROUTE_UTURN',
-    name: 'U-Turn Route',
-    waypoints: [
-      new THREE.Vector3(-BLOCK_SIZE / 2 - 25, 0.01, BLOCK_SIZE / 2 - 2),
-      new THREE.Vector3(-BLOCK_SIZE / 2, 0.01, BLOCK_SIZE / 2 - 2),
-      new THREE.Vector3(BLOCK_SIZE / 2, 0.01, BLOCK_SIZE / 2 - 2),
-      new THREE.Vector3(BLOCK_SIZE / 2 + 2, 0.01, BLOCK_SIZE / 2),
-      new THREE.Vector3(BLOCK_SIZE / 2 + 2, 0.01, BLOCK_SIZE + 2),
-      new THREE.Vector3(BLOCK_SIZE / 2 + 12, 0.01, BLOCK_SIZE + 15),
-      new THREE.Vector3(BLOCK_SIZE / 2 + 27, 0.01, BLOCK_SIZE + 2),
-      new THREE.Vector3(BLOCK_SIZE / 2 + 27, 0.01, BLOCK_SIZE / 2),
-      new THREE.Vector3(BLOCK_SIZE / 2 - 2, 0.01, BLOCK_SIZE / 2),
-      new THREE.Vector3(BLOCK_SIZE / 2 - 2, 0.01, -BLOCK_SIZE / 2),
-      new THREE.Vector3(BLOCK_SIZE / 2, 0.01, -BLOCK_SIZE / 2 - 2),
-      new THREE.Vector3(-BLOCK_SIZE / 2 - 25, 0.01, -BLOCK_SIZE / 2 - 2),
-    ],
-  },
-  // North to South through East side
-  {
-    id: 'ROUTE_NS_E',
-    name: 'North-South East',
-    waypoints: [
-      new THREE.Vector3(BLOCK_SIZE / 2 + 2, 0.01, -BLOCK_SIZE / 2 - 25),
-      new THREE.Vector3(BLOCK_SIZE / 2 + 2, 0.01, -BLOCK_SIZE / 2),
-      new THREE.Vector3(BLOCK_SIZE / 2 + 2, 0.01, BLOCK_SIZE / 2),
-      new THREE.Vector3(BLOCK_SIZE / 2 + 2, 0.01, BLOCK_SIZE / 2 + 25),
-    ],
-  },
-  // South to North through East side
-  {
-    id: 'ROUTE_SN_E',
-    name: 'South-North East',
-    waypoints: [
-      new THREE.Vector3(BLOCK_SIZE / 2 - 2, 0.01, BLOCK_SIZE / 2 + 25),
-      new THREE.Vector3(BLOCK_SIZE / 2 - 2, 0.01, BLOCK_SIZE / 2),
-      new THREE.Vector3(BLOCK_SIZE / 2 - 2, 0.01, -BLOCK_SIZE / 2),
-      new THREE.Vector3(BLOCK_SIZE / 2 - 2, 0.01, -BLOCK_SIZE / 2 - 25),
-    ],
-  },
-  // West to East through South side
-  {
-    id: 'ROUTE_WE_S',
-    name: 'West-East South',
-    waypoints: [
-      new THREE.Vector3(-BLOCK_SIZE / 2 - 25, 0.01, BLOCK_SIZE / 2 - 2),
-      new THREE.Vector3(-BLOCK_SIZE / 2, 0.01, BLOCK_SIZE / 2 - 2),
-      new THREE.Vector3(BLOCK_SIZE / 2, 0.01, BLOCK_SIZE / 2 - 2),
-      new THREE.Vector3(BLOCK_SIZE / 2 + 25, 0.01, BLOCK_SIZE / 2 - 2),
-    ],
-  },
-  // East to West through South side
-  {
-    id: 'ROUTE_EW_S',
-    name: 'East-West South',
-    waypoints: [
-      new THREE.Vector3(BLOCK_SIZE / 2 + 25, 0.01, BLOCK_SIZE / 2 + 2),
-      new THREE.Vector3(BLOCK_SIZE / 2, 0.01, BLOCK_SIZE / 2 + 2),
-      new THREE.Vector3(-BLOCK_SIZE / 2, 0.01, BLOCK_SIZE / 2 + 2),
-      new THREE.Vector3(-BLOCK_SIZE / 2 - 25, 0.01, BLOCK_SIZE / 2 + 2),
-    ],
-  },
-];
+/** Travel directions of traffic entering a junction (one per connected arm). */
+export function getJunctionApproaches(junctionId: string): Direction[] {
+  const center = NODES[junctionId].position;
+  const approaches: Direction[] = [];
+  for (const [a, b] of EDGES) {
+    const other = a === junctionId ? b : b === junctionId ? a : null;
+    if (!other) continue;
+    const towardJunction = center.clone().sub(NODES[other].position).normalize();
+    approaches.push(directionName(towardJunction));
+  }
+  return approaches;
+}
 
-// ─── Junction Definitions ────────────────────────────────────────
-const createPhases = (dirs: string[][]): TrafficLightPhase[] => [
-  { state: 'green', duration: 12, directions: dirs[0] },
-  { state: 'yellow', duration: 3, directions: dirs[0] },
-  { state: 'red', duration: 2, directions: [] },
-  { state: 'green', duration: 12, directions: dirs[1] },
-  { state: 'yellow', duration: 3, directions: dirs[1] },
-  { state: 'red', duration: 2, directions: [] },
-];
+// ─── Junctions & Traffic Lights ──────────────────────────────────
+const createPhases = (groups: Direction[][], green = 12): TrafficLightPhase[] =>
+  groups.flatMap((dirs) => [
+    { state: 'green' as const, duration: green, directions: dirs },
+    { state: 'yellow' as const, duration: 3, directions: dirs },
+    { state: 'red' as const, duration: 2, directions: [] }, // all-red clearance
+  ]);
+
+const makeJunction = (
+  id: string,
+  type: Junction['type'],
+  groups: Direction[][],
+  startPhase: number,
+  green = 12,
+): Junction => {
+  const phases = createPhases(groups, green);
+  return {
+    id,
+    type,
+    position: NODES[id].position,
+    radius: ROAD_WIDTH,
+    trafficLight: {
+      id: `TL_${id}`,
+      junctionId: id,
+      phases,
+      currentPhaseIndex: startPhase,
+      phaseEndsAt: phases[startPhase].duration,
+      mode: 'auto',
+      position: NODES[id].position.clone(),
+    },
+  };
+};
+
+const NS_EW: Direction[][] = [['north', 'south'], ['east', 'west']];
 
 export const JUNCTIONS: Junction[] = [
-  {
-    id: 'J1', position: JUNCTION_POSITIONS.J1,
-    type: 'cross', connectedRoads: ['R_N', 'R_W'], radius: ROAD_WIDTH,
-    trafficLight: {
-      id: 'TL_J1', junctionId: 'J1',
-      phases: createPhases([['north', 'south'], ['east', 'west']]),
-      currentPhaseIndex: 0, timer: 12, mode: 'auto',
-      position: JUNCTION_POSITIONS.J1.clone(), rotation: 0,
-    },
-  },
-  {
-    id: 'J2', position: JUNCTION_POSITIONS.J2,
-    type: 'cross', connectedRoads: ['R_N', 'R_E', 'R_T_TOP'], radius: ROAD_WIDTH,
-    trafficLight: {
-      id: 'TL_J2', junctionId: 'J2',
-      phases: createPhases([['north', 'south'], ['east', 'west']]),
-      currentPhaseIndex: 3, timer: 12, mode: 'auto',
-      position: JUNCTION_POSITIONS.J2.clone(), rotation: 0,
-    },
-  },
-  {
-    id: 'J3', position: JUNCTION_POSITIONS.J3,
-    type: 'cross', connectedRoads: ['R_S', 'R_W'], radius: ROAD_WIDTH,
-    trafficLight: {
-      id: 'TL_J3', junctionId: 'J3',
-      phases: createPhases([['north', 'south'], ['east', 'west']]),
-      currentPhaseIndex: 3, timer: 12, mode: 'auto',
-      position: JUNCTION_POSITIONS.J3.clone(), rotation: 0,
-    },
-  },
-  {
-    id: 'J4', position: JUNCTION_POSITIONS.J4,
-    type: 'cross', connectedRoads: ['R_S', 'R_E', 'R_T_BOT', 'R_UTURN'], radius: ROAD_WIDTH,
-    trafficLight: {
-      id: 'TL_J4', junctionId: 'J4',
-      phases: createPhases([['north', 'south'], ['east', 'west']]),
-      currentPhaseIndex: 0, timer: 12, mode: 'auto',
-      position: JUNCTION_POSITIONS.J4.clone(), rotation: 0,
-    },
-  },
-  {
-    id: 'J5', position: JUNCTION_POSITIONS.J5,
-    type: 't-junction', connectedRoads: ['R_T_TOP', 'R_T_BOT'], radius: ROAD_WIDTH,
-    trafficLight: {
-      id: 'TL_J5', junctionId: 'J5',
-      phases: [
-        { state: 'green', duration: 15, directions: ['north'] },
-        { state: 'yellow', duration: 3, directions: ['north'] },
-        { state: 'red', duration: 2, directions: [] },
-        { state: 'green', duration: 15, directions: ['south'] },
-        { state: 'yellow', duration: 3, directions: ['south'] },
-        { state: 'red', duration: 2, directions: [] },
-      ],
-      currentPhaseIndex: 0, timer: 15, mode: 'auto',
-      position: JUNCTION_POSITIONS.J5.clone(), rotation: Math.PI / 2,
-    },
-  },
+  makeJunction('J1', 'cross', NS_EW, 0),
+  makeJunction('J2', 'cross', NS_EW, 3),
+  makeJunction('J3', 'cross', NS_EW, 3),
+  makeJunction('J4', 'cross', NS_EW, 0),
+  // T-junction: main road (north/south) vs. the stem from the east (westbound)
+  makeJunction('J5', 't-junction', [['north', 'south'], ['west']], 0, 15),
 ];
+
+export function createInitialTrafficLights(): Map<string, TrafficLight> {
+  return new Map(
+    JUNCTIONS.map((j) => [j.trafficLight.id, { ...j.trafficLight, position: j.trafficLight.position.clone() }])
+  );
+}
+
+// ─── Route Definitions (node sequences vehicles drive along) ─────
+export interface RouteDef {
+  id: string;
+  name: string;
+  nodes: string[];
+}
+
+export const ROUTE_DEFS: RouteDef[] = [
+  { id: 'ROUTE_WE_T', name: 'West → East via T-Junction', nodes: ['XW1', 'J1', 'J2', 'CNE', 'J5', 'XE5'] },
+  { id: 'ROUTE_EW_T', name: 'East → West via T-Junction', nodes: ['XE5', 'J5', 'CNE', 'J2', 'J1', 'XW1'] },
+  { id: 'ROUTE_NS_W', name: 'North → South (West)', nodes: ['XN1', 'J1', 'J3', 'XS3'] },
+  { id: 'ROUTE_SN_W', name: 'South → North (West)', nodes: ['XS3', 'J3', 'J1', 'XN1'] },
+  { id: 'ROUTE_WE_S', name: 'West → East (South)', nodes: ['XW3', 'J3', 'J4', 'CSE', 'J5', 'XE5'] },
+  { id: 'ROUTE_EW_S', name: 'East → West (South)', nodes: ['XE5', 'J5', 'CSE', 'J4', 'J3', 'XW3'] },
+  { id: 'ROUTE_CW', name: 'Clockwise Square Loop', nodes: ['XW1', 'J1', 'J2', 'J4', 'J3', 'J1', 'XN1'] },
+  { id: 'ROUTE_CCW', name: 'Counter-clockwise Square Loop', nodes: ['XN1', 'J1', 'J3', 'J4', 'J2', 'J1', 'XW1'] },
+  { id: 'ROUTE_T_THROUGH', name: 'Through the T-Junction', nodes: ['XW1', 'J1', 'J2', 'CNE', 'J5', 'CSE', 'J4', 'J3', 'XS3'] },
+  { id: 'ROUTE_UTURN_A', name: 'U-Turn (from West)', nodes: ['XW3', 'J3', 'J4', 'UT', 'J4', 'J2', 'XN2'] },
+  { id: 'ROUTE_UTURN_B', name: 'U-Turn (from North)', nodes: ['XN2', 'J2', 'J4', 'UT', 'J4', 'J3', 'XW3'] },
+  { id: 'ROUTE_N2_T', name: 'North → T-Junction', nodes: ['XN2', 'J2', 'CNE', 'J5', 'XE5'] },
+  { id: 'ROUTE_T_UTURN', name: 'T-Junction → U-Turn', nodes: ['XE5', 'J5', 'CSE', 'J4', 'UT', 'J4', 'J2', 'XN2'] },
+  { id: 'ROUTE_S3_T', name: 'South-West → T-Junction → North', nodes: ['XS3', 'J3', 'J4', 'CSE', 'J5', 'CNE', 'J2', 'XN2'] },
+];
+
+// ─── Vehicle Specs (shared by physics and rendering) ─────────────
+export interface VehicleSpec {
+  length: number;
+  width: number;
+  maxSpeed: number; // m/s
+  acceleration: number; // m/s²
+  bodyH: number;
+  cabinH: number;
+  cabinL: number;
+  wheelR: number;
+  weight: number; // spawn probability weight
+}
+
+export const VEHICLE_SPECS: Record<VehicleType, VehicleSpec> = {
+  sedan: { length: 4.5, width: 1.8, maxSpeed: 13.9, acceleration: 2.0, bodyH: 0.9, cabinH: 0.7, cabinL: 2.2, wheelR: 0.35, weight: 35 },
+  suv: { length: 4.8, width: 2.0, maxSpeed: 13.0, acceleration: 1.8, bodyH: 1.1, cabinH: 0.8, cabinL: 2.6, wheelR: 0.4, weight: 25 },
+  truck: { length: 6.5, width: 2.3, maxSpeed: 11.1, acceleration: 1.2, bodyH: 1.3, cabinH: 1.0, cabinL: 1.8, wheelR: 0.45, weight: 15 },
+  bus: { length: 8.0, width: 2.5, maxSpeed: 11.1, acceleration: 1.0, bodyH: 1.2, cabinH: 1.2, cabinL: 6.0, wheelR: 0.45, weight: 10 },
+  sports: { length: 4.2, width: 1.9, maxSpeed: 15.3, acceleration: 3.0, bodyH: 0.7, cabinH: 0.5, cabinL: 1.8, wheelR: 0.3, weight: 15 },
+};
 
 // ─── Vehicle Colors Palette ──────────────────────────────────────
 export const VEHICLE_COLORS = [
@@ -393,7 +222,7 @@ export const VEHICLE_COLORS = [
 
 // ─── Building Positions ──────────────────────────────────────────
 export interface BuildingConfig {
-  position: [number, number, number];
+  position: [number, number];
   size: [number, number, number];
   color: string;
   type: 'residential' | 'commercial' | 'office' | 'park';
@@ -401,59 +230,52 @@ export interface BuildingConfig {
 
 export const BUILDINGS: BuildingConfig[] = [
   // Inner block (between the 4 junctions)
-  { position: [-10, 0, -10], size: [12, 8, 12], color: '#7f8c8d', type: 'office' },
-  { position: [10, 0, -8], size: [10, 6, 14], color: '#95a5a6', type: 'commercial' },
-  { position: [-8, 0, 10], size: [14, 10, 10], color: '#bdc3c7', type: 'office' },
-  { position: [10, 0, 10], size: [10, 7, 10], color: '#7f8c8d', type: 'residential' },
-  { position: [0, 0, 0], size: [8, 4, 8], color: '#27ae60', type: 'park' },
-  
-  // Outer buildings - North West
-  { position: [-BLOCK_SIZE / 2 - 18, 4.5, -BLOCK_SIZE / 2 - 18], size: [14, 9, 14], color: '#8e99a4', type: 'residential' },
-  { position: [-BLOCK_SIZE / 2 - 35, 3, -BLOCK_SIZE / 2 - 12], size: [10, 6, 10], color: '#a4b0be', type: 'commercial' },
-  
-  // Outer buildings - North East
-  { position: [BLOCK_SIZE / 2 + 18, 5, -BLOCK_SIZE / 2 - 18], size: [12, 10, 12], color: '#636e72', type: 'office' },
-  
-  // Outer buildings - South West
-  { position: [-BLOCK_SIZE / 2 - 18, 3.5, BLOCK_SIZE / 2 + 18], size: [12, 7, 14], color: '#b2bec3', type: 'residential' },
-  { position: [-BLOCK_SIZE / 2 - 35, 4, BLOCK_SIZE / 2 + 12], size: [10, 8, 10], color: '#dfe6e9', type: 'commercial' },
-  
-  // Outer buildings - South East
-  { position: [BLOCK_SIZE / 2 + 18, 4, BLOCK_SIZE / 2 + 18], size: [10, 8, 10], color: '#636e72', type: 'office' },
-  
-  // T-junction area buildings
-  { position: [BLOCK_SIZE * 1.1 + 15, 3, -10], size: [10, 6, 14], color: '#95a5a6', type: 'commercial' },
-  { position: [BLOCK_SIZE * 1.1 + 15, 4, 10], size: [12, 8, 12], color: '#7f8c8d', type: 'residential' },
-  
+  { position: [-10, -10], size: [12, 8, 12], color: '#7f8c8d', type: 'office' },
+  { position: [10, -8], size: [10, 6, 14], color: '#95a5a6', type: 'commercial' },
+  { position: [-8, 10], size: [14, 10, 10], color: '#bdc3c7', type: 'office' },
+  { position: [10, 10], size: [10, 7, 10], color: '#7f8c8d', type: 'residential' },
+  { position: [0, 0], size: [8, 0.2, 8], color: '#27ae60', type: 'park' },
+
+  // North West
+  { position: [-H - 18, -H - 18], size: [14, 9, 14], color: '#8e99a4', type: 'residential' },
+  { position: [-H - 35, -H - 12], size: [10, 6, 10], color: '#a4b0be', type: 'commercial' },
+  // North East
+  { position: [H + 18, -H - 18], size: [12, 10, 12], color: '#636e72', type: 'office' },
+  // South West
+  { position: [-H - 18, H + 18], size: [12, 7, 14], color: '#b2bec3', type: 'residential' },
+  { position: [-H - 35, H + 12], size: [10, 8, 10], color: '#dfe6e9', type: 'commercial' },
+  // South East
+  { position: [H + 18, H + 18], size: [10, 8, 10], color: '#636e72', type: 'office' },
+  // T-junction area (clear of the stem road at z = 0)
+  { position: [T_X + 15, -14], size: [10, 6, 12], color: '#95a5a6', type: 'commercial' },
+  { position: [T_X + 15, 15], size: [12, 8, 12], color: '#7f8c8d', type: 'residential' },
   // U-turn area
-  { position: [BLOCK_SIZE / 2 + 12, 2.5, BLOCK_SIZE + 20], size: [8, 5, 8], color: '#a4b0be', type: 'commercial' },
+  { position: [H + 20, BLOCK_SIZE + 18], size: [8, 5, 8], color: '#a4b0be', type: 'commercial' },
 ];
 
 // ─── Tree Positions ──────────────────────────────────────────────
 export const TREE_POSITIONS: [number, number, number][] = [
   [-5, 0, -22], [5, 0, -22], [-22, 0, -5], [-22, 0, 5],
   [22, 0, -5], [22, 0, 5], [-5, 0, 22], [5, 0, 22],
-  [-BLOCK_SIZE / 2 - 10, 0, -BLOCK_SIZE / 2 + 8],
-  [BLOCK_SIZE / 2 + 10, 0, -BLOCK_SIZE / 2 + 8],
-  [-BLOCK_SIZE / 2 - 10, 0, BLOCK_SIZE / 2 - 8],
-  [BLOCK_SIZE / 2 + 10, 0, BLOCK_SIZE / 2 - 8],
-  [BLOCK_SIZE * 1.1 + 5, 0, -15],
-  [BLOCK_SIZE * 1.1 + 5, 0, 15],
-  [0, 0, -3], [0, 0, 3], [-3, 0, 0], [3, 0, 0],
+  [-H - 10, 0, -H + 8],
+  [H + 10, 0, -H + 8],
+  [-H - 10, 0, H - 8],
+  [H + 10, 0, H - 8],
+  [T_X + 8, 0, -20],
+  [T_X + 8, 0, 22],
+  [-2.5, 0, -2.5], [2.5, 0, 2.5], [-2.5, 0, 2.5], [2.5, 0, -2.5],
 ];
 
-// ─── Spawn / Despawn points (edges of the map) ──────────────────
-export const SPAWN_POINTS: THREE.Vector3[] = [
-  new THREE.Vector3(-BLOCK_SIZE / 2 - 25, 0.01, -BLOCK_SIZE / 2 - 2),
-  new THREE.Vector3(-BLOCK_SIZE / 2 - 25, 0.01, -BLOCK_SIZE / 2 + 2),
-  new THREE.Vector3(-BLOCK_SIZE / 2 - 25, 0.01, BLOCK_SIZE / 2 - 2),
-  new THREE.Vector3(-BLOCK_SIZE / 2 - 25, 0.01, BLOCK_SIZE / 2 + 2),
-  new THREE.Vector3(BLOCK_SIZE / 2 + 25, 0.01, -BLOCK_SIZE / 2 - 2),
-  new THREE.Vector3(BLOCK_SIZE / 2 + 25, 0.01, -BLOCK_SIZE / 2 + 2),
-  new THREE.Vector3(BLOCK_SIZE / 2 + 25, 0.01, BLOCK_SIZE / 2 - 2),
-  new THREE.Vector3(BLOCK_SIZE / 2 + 25, 0.01, BLOCK_SIZE / 2 + 2),
-  new THREE.Vector3(-BLOCK_SIZE / 2 + 2, 0.01, -BLOCK_SIZE / 2 - 25),
-  new THREE.Vector3(-BLOCK_SIZE / 2 - 2, 0.01, BLOCK_SIZE / 2 + 25),
-  new THREE.Vector3(BLOCK_SIZE / 2 + 2, 0.01, -BLOCK_SIZE / 2 - 25),
-  new THREE.Vector3(BLOCK_SIZE / 2 - 2, 0.01, BLOCK_SIZE / 2 + 25),
+// ─── Street Lamp Positions ───────────────────────────────────────
+export const STREET_LAMPS: [number, number, number][] = [
+  [-H - 6, 0, -H - 6],
+  [H + 6, 0, -H - 6],
+  [-H - 6, 0, H + 6],
+  [H + 6, 0, H + 6],
+  [-H - 6, 0, 0],
+  [H + 6, 0, 0],
+  [0, 0, -H - 6],
+  [0, 0, H + 6],
+  [T_X + 8, 0, -7],
+  [T_X + 8, 0, 7],
 ];

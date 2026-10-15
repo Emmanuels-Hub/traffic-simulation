@@ -1,78 +1,73 @@
 import React, { useRef, useMemo } from 'react';
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
-import type { Vehicle as VehicleType } from '../../types';
+import { useSimulationStore } from '../../store/simulationStore';
+import { VEHICLE_SPECS } from '../../config/roadNetwork';
 
 interface VehicleProps {
-  vehicle: VehicleType;
-  onClick?: () => void;
+  vehicleId: string;
+  onSelect?: (id: string) => void;
   isSelected?: boolean;
 }
 
-// Low-poly 3D car model using primitives
-export const Vehicle: React.FC<VehicleProps> = React.memo(({ vehicle, onClick, isSelected }) => {
-  const groupRef = useRef<THREE.Group>(null!);
-  const targetPos = useRef(vehicle.position.clone());
-  const targetRot = useRef(vehicle.rotation.clone());
+const TAIL_OFF = new THREE.Color('#8B0000');
+const TAIL_ON = new THREE.Color('#ff1a1a');
 
-  // Smooth interpolation for visual movement
+// Low-poly 3D vehicle. The model's front faces local +Z, matching the
+// engine's heading convention (rotation.y = atan2(dir.x, dir.z)).
+export const Vehicle: React.FC<VehicleProps> = React.memo(({ vehicleId, onSelect, isSelected }) => {
+  const groupRef = useRef<THREE.Group>(null);
+  const tailMaterials = useRef<THREE.MeshStandardMaterial[]>([]);
+
+  // Static attributes — selected as primitives so per-frame motion doesn't re-render
+  const type = useSimulationStore((s) => s.vehicles.get(vehicleId)?.type ?? 'sedan');
+  const colorHex = useSimulationStore((s) => s.vehicles.get(vehicleId)?.color ?? '#ffffff');
+  const isNight = useSimulationStore((s) => s.config.timeOfDay < 6 || s.config.timeOfDay > 18.5);
+
+  const spec = VEHICLE_SPECS[type];
+  const dims = {
+    bodyL: spec.length,
+    bodyW: spec.width,
+    bodyH: spec.bodyH,
+    cabinH: spec.cabinH,
+    cabinL: spec.cabinL,
+    wheelR: spec.wheelR,
+  };
+  const rideHeight = dims.wheelR + dims.bodyH / 2;
+
+  const color = useMemo(() => new THREE.Color(colorHex), [colorHex]);
+  const darkColor = useMemo(() => new THREE.Color(colorHex).multiplyScalar(0.6), [colorHex]);
+
+  // Pose and brake lights follow the simulation every frame
   useFrame(() => {
-    if (!groupRef.current) return;
-    
-    targetPos.current.copy(vehicle.position);
-    targetRot.current.copy(vehicle.rotation);
-
-    groupRef.current.position.lerp(targetPos.current, 0.3);
-    
-    // Smooth rotation
-    const currentY = groupRef.current.rotation.y;
-    let targetY = targetRot.current.y;
-    
-    // Handle angle wrapping
-    let diff = targetY - currentY;
-    while (diff > Math.PI) diff -= Math.PI * 2;
-    while (diff < -Math.PI) diff += Math.PI * 2;
-    
-    groupRef.current.rotation.y = currentY + diff * 0.15;
+    const v = useSimulationStore.getState().vehicles.get(vehicleId);
+    const group = groupRef.current;
+    if (!v || !group) return;
+    group.position.set(v.position.x, rideHeight, v.position.z);
+    group.rotation.y = v.rotation.y;
+    const braking = v.velocity < 0.3 || v.currentAccel < -0.8;
+    for (const m of tailMaterials.current) {
+      m.emissive.copy(braking ? TAIL_ON : TAIL_OFF);
+      m.emissiveIntensity = braking ? 1.8 : 0.3;
+    }
   });
 
-  const color = useMemo(() => new THREE.Color(vehicle.color), [vehicle.color]);
-  const darkColor = useMemo(() => new THREE.Color(vehicle.color).multiplyScalar(0.6), [vehicle.color]);
-  const glassColor = useMemo(() => new THREE.Color('#87CEEB'), []);
-
-  // Vehicle dimensions based on type
-  const dims = useMemo(() => {
-    switch (vehicle.type) {
-      case 'sedan':
-        return { bodyL: 4.2, bodyW: 1.8, bodyH: 0.9, cabinH: 0.7, cabinL: 2.2, wheelR: 0.35 };
-      case 'suv':
-        return { bodyL: 4.8, bodyW: 2.0, bodyH: 1.1, cabinH: 0.8, cabinL: 2.6, wheelR: 0.4 };
-      case 'truck':
-        return { bodyL: 6.0, bodyW: 2.2, bodyH: 1.3, cabinH: 1.0, cabinL: 1.8, wheelR: 0.45 };
-      case 'bus':
-        return { bodyL: 7.5, bodyW: 2.4, bodyH: 1.2, cabinH: 1.2, cabinL: 5.5, wheelR: 0.45 };
-      case 'sports':
-        return { bodyL: 4.0, bodyW: 1.9, bodyH: 0.7, cabinH: 0.5, cabinL: 1.8, wheelR: 0.3 };
-      default:
-        return { bodyL: 4.2, bodyW: 1.8, bodyH: 0.9, cabinH: 0.7, cabinL: 2.2, wheelR: 0.35 };
-    }
-  }, [vehicle.type]);
-
-  const isBraking = vehicle.state === 'stopped' || vehicle.state === 'waiting';
+  const initial = useSimulationStore.getState().vehicles.get(vehicleId);
+  const cabinZ = type === 'truck' ? dims.bodyL / 2 - dims.cabinL / 2 - 0.3 : type === 'bus' ? 0 : 0.2;
 
   return (
     <group
       ref={groupRef}
-      position={[vehicle.position.x, vehicle.position.y + dims.wheelR + dims.bodyH / 2, vehicle.position.z]}
-      rotation={[vehicle.rotation.x, vehicle.rotation.y, vehicle.rotation.z]}
+      position={[initial?.position.x ?? 0, rideHeight, initial?.position.z ?? 0]}
+      rotation={[0, initial?.rotation.y ?? 0, 0]}
       onClick={(e) => {
         e.stopPropagation();
-        onClick?.();
+        onSelect?.(vehicleId);
       }}
     >
       {/* Selection indicator */}
       {isSelected && (
-        <mesh position={[0, dims.bodyH + dims.cabinH + 1, 0]}>
+        <mesh position={[0, dims.bodyH + dims.cabinH + 1, 0]} rotation={[Math.PI, 0, 0]}>
           <coneGeometry args={[0.4, 0.8, 4]} />
           <meshStandardMaterial color="#f39c12" emissive="#f39c12" emissiveIntensity={0.8} />
         </mesh>
@@ -85,88 +80,69 @@ export const Vehicle: React.FC<VehicleProps> = React.memo(({ vehicle, onClick, i
       </mesh>
 
       {/* Cabin / Windows */}
-      <mesh
-        position={[0, dims.bodyH / 2 + dims.cabinH / 2, vehicle.type === 'truck' ? -dims.bodyL / 2 + dims.cabinL / 2 + 0.3 : -0.2]}
-        castShadow
-      >
+      <mesh position={[0, dims.bodyH / 2 + dims.cabinH / 2, cabinZ]} castShadow>
         <boxGeometry args={[dims.bodyW - 0.2, dims.cabinH, dims.cabinL]} />
-        <meshStandardMaterial color={glassColor} metalness={0.8} roughness={0.1} transparent opacity={0.6} />
+        <meshStandardMaterial color="#87CEEB" metalness={0.8} roughness={0.1} transparent opacity={0.6} />
       </mesh>
 
-      {/* Truck bed */}
-      {vehicle.type === 'truck' && (
-        <mesh position={[0, dims.bodyH / 2 + 0.3, dims.bodyL / 2 - 1.5]} castShadow>
+      {/* Truck bed (behind the cab) */}
+      {type === 'truck' && (
+        <mesh position={[0, dims.bodyH / 2 + 0.3, -dims.bodyL / 2 + 1.7]} castShadow>
           <boxGeometry args={[dims.bodyW, 0.6, 3]} />
           <meshStandardMaterial color={darkColor} metalness={0.4} roughness={0.5} />
         </mesh>
       )}
 
-      {/* Headlights */}
-      <mesh position={[-dims.bodyW / 2 + 0.2, 0, -dims.bodyL / 2 - 0.01]}>
-        <boxGeometry args={[0.3, 0.2, 0.05]} />
-        <meshStandardMaterial 
-          color="#FFF9C4" 
-          emissive="#FFF9C4" 
-          emissiveIntensity={0.5} 
-        />
-      </mesh>
-      <mesh position={[dims.bodyW / 2 - 0.2, 0, -dims.bodyL / 2 - 0.01]}>
-        <boxGeometry args={[0.3, 0.2, 0.05]} />
-        <meshStandardMaterial 
-          color="#FFF9C4" 
-          emissive="#FFF9C4" 
-          emissiveIntensity={0.5} 
-        />
-      </mesh>
+      {/* Headlights (front, +Z) */}
+      {[-1, 1].map((side) => (
+        <mesh key={`head-${side}`} position={[side * (dims.bodyW / 2 - 0.25), 0, dims.bodyL / 2 + 0.01]}>
+          <boxGeometry args={[0.3, 0.2, 0.05]} />
+          <meshStandardMaterial color="#FFF9C4" emissive="#FFF9C4" emissiveIntensity={isNight ? 2.5 : 0.5} />
+        </mesh>
+      ))}
 
-      {/* Tail lights */}
-      <mesh position={[-dims.bodyW / 2 + 0.2, 0, dims.bodyL / 2 + 0.01]}>
-        <boxGeometry args={[0.3, 0.2, 0.05]} />
-        <meshStandardMaterial
-          color={isBraking ? '#ff0000' : '#8B0000'}
-          emissive={isBraking ? '#ff0000' : '#8B0000'}
-          emissiveIntensity={isBraking ? 1.5 : 0.3}
-        />
-      </mesh>
-      <mesh position={[dims.bodyW / 2 - 0.2, 0, dims.bodyL / 2 + 0.01]}>
-        <boxGeometry args={[0.3, 0.2, 0.05]} />
-        <meshStandardMaterial
-          color={isBraking ? '#ff0000' : '#8B0000'}
-          emissive={isBraking ? '#ff0000' : '#8B0000'}
-          emissiveIntensity={isBraking ? 1.5 : 0.3}
-        />
-      </mesh>
+      {/* Tail / brake lights (rear, -Z) */}
+      {[-1, 1].map((side, i) => (
+        <mesh key={`tail-${side}`} position={[side * (dims.bodyW / 2 - 0.25), 0, -dims.bodyL / 2 - 0.01]}>
+          <boxGeometry args={[0.3, 0.2, 0.05]} />
+          <meshStandardMaterial
+            ref={(m) => {
+              if (m) tailMaterials.current[i] = m;
+            }}
+            color="#8B0000"
+            emissive="#8B0000"
+            emissiveIntensity={0.3}
+          />
+        </mesh>
+      ))}
 
       {/* Wheels */}
       {[
-        [-dims.bodyW / 2, -dims.bodyH / 2, -dims.bodyL / 3],
-        [dims.bodyW / 2, -dims.bodyH / 2, -dims.bodyL / 3],
         [-dims.bodyW / 2, -dims.bodyH / 2, dims.bodyL / 3],
         [dims.bodyW / 2, -dims.bodyH / 2, dims.bodyL / 3],
+        [-dims.bodyW / 2, -dims.bodyH / 2, -dims.bodyL / 3],
+        [dims.bodyW / 2, -dims.bodyH / 2, -dims.bodyL / 3],
       ].map((pos, i) => (
         <mesh key={i} position={pos as [number, number, number]} rotation={[0, 0, Math.PI / 2]} castShadow>
-          <cylinderGeometry args={[dims.wheelR, dims.wheelR, 0.25, 8]} />
+          <cylinderGeometry args={[dims.wheelR, dims.wheelR, 0.25, 12]} />
           <meshStandardMaterial color="#1a1a1a" metalness={0.3} roughness={0.7} />
         </mesh>
       ))}
 
-      {/* Bus windows */}
-      {vehicle.type === 'bus' && (
-        <>
-          {[0, 1, 2, 3].map((i) => (
-            <React.Fragment key={`bus-win-${i}`}>
-              <mesh position={[dims.bodyW / 2 + 0.01, dims.bodyH / 2 + dims.cabinH / 2, -dims.cabinL / 2 + 0.5 + i * 1.3]}>
-                <planeGeometry args={[0.01, 0.6, 0.8]} />
-                <meshStandardMaterial color="#87CEEB" transparent opacity={0.5} side={THREE.DoubleSide} />
-              </mesh>
-              <mesh position={[-dims.bodyW / 2 - 0.01, dims.bodyH / 2 + dims.cabinH / 2, -dims.cabinL / 2 + 0.5 + i * 1.3]}>
-                <planeGeometry args={[0.01, 0.6, 0.8]} />
-                <meshStandardMaterial color="#87CEEB" transparent opacity={0.5} side={THREE.DoubleSide} />
-              </mesh>
-            </React.Fragment>
-          ))}
-        </>
-      )}
+      {/* Bus side windows */}
+      {type === 'bus' &&
+        [-1, 1].map((side) =>
+          [0, 1, 2, 3].map((i) => (
+            <mesh
+              key={`bus-win-${side}-${i}`}
+              position={[side * (dims.bodyW / 2 - 0.08), dims.bodyH / 2 + dims.cabinH / 2, -dims.cabinL / 2 + 0.9 + i * 1.4]}
+              rotation={[0, (side * Math.PI) / 2, 0]}
+            >
+              <planeGeometry args={[1.1, 0.7]} />
+              <meshStandardMaterial color="#cfefff" emissive="#87CEEB" emissiveIntensity={isNight ? 0.6 : 0.1} side={THREE.DoubleSide} />
+            </mesh>
+          ))
+        )}
     </group>
   );
 });

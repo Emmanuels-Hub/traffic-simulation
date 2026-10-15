@@ -1,6 +1,6 @@
 import React from 'react';
 import {
-  LineChart, Line, AreaChart, Area, BarChart, Bar,
+  LineChart, Line, AreaChart, Area, BarChart, Bar, Cell,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from 'recharts';
 import { useSimulationStore } from '../../store/simulationStore';
@@ -8,35 +8,22 @@ import './AnalyticsDashboard.css';
 
 export const AnalyticsDashboard: React.FC = () => {
   const analytics = useSimulationStore((s) => s.analytics);
-  const vehicles = useSimulationStore((s) => s.vehicles);
 
-  // Vehicle type distribution
-  const typeDistribution = React.useMemo(() => {
-    const counts: Record<string, number> = {
-      sedan: 0, suv: 0, truck: 0, bus: 0, sports: 0,
-    };
-    vehicles.forEach((v) => {
-      counts[v.type] = (counts[v.type] || 0) + 1;
-    });
-    return Object.entries(counts).map(([type, count]) => ({
+  const typeDistribution = React.useMemo(
+    () => Object.entries(analytics.vehicleTypeCounts).map(([type, count]) => ({
       type: type.charAt(0).toUpperCase() + type.slice(1),
       count,
-    }));
-  }, [vehicles]);
+    })),
+    [analytics.vehicleTypeCounts]
+  );
 
-  // Vehicle state distribution
-  const stateDistribution = React.useMemo(() => {
-    const counts: Record<string, number> = {
-      moving: 0, stopped: 0, waiting: 0, turning: 0,
-    };
-    vehicles.forEach((v) => {
-      counts[v.state] = (counts[v.state] || 0) + 1;
-    });
-    return Object.entries(counts).map(([state, count]) => ({
+  const stateDistribution = React.useMemo(
+    () => Object.entries(analytics.vehicleStateCounts).map(([state, count]) => ({
       state: state.charAt(0).toUpperCase() + state.slice(1),
       count,
-    }));
-  }, [vehicles]);
+    })),
+    [analytics.vehicleStateCounts]
+  );
 
   const customTooltipStyle = {
     backgroundColor: 'rgba(12, 14, 22, 0.95)',
@@ -208,7 +195,7 @@ export const AnalyticsDashboard: React.FC = () => {
               <Bar dataKey="count" radius={[4, 4, 0, 0]} name="Count">
                 {stateDistribution.map((_, idx) => {
                   const colors = ['#2ecc71', '#e74c3c', '#f39c12', '#3498db'];
-                  return <rect key={idx} fill={colors[idx % colors.length]} />;
+                  return <Cell key={idx} fill={colors[idx % colors.length]} />;
                 })}
               </Bar>
             </BarChart>
@@ -225,6 +212,7 @@ export const AnalyticsDashboard: React.FC = () => {
                   <th>Junction</th>
                   <th>Waiting</th>
                   <th>Avg Wait (s)</th>
+                  <th>Flow/min</th>
                   <th>Congestion</th>
                   <th>Status</th>
                 </tr>
@@ -235,6 +223,7 @@ export const AnalyticsDashboard: React.FC = () => {
                     <td className="jt-id">{js.junctionId}</td>
                     <td>{js.vehiclesWaiting}</td>
                     <td>{js.avgWaitTime.toFixed(1)}</td>
+                    <td>{js.throughput.toFixed(1)}</td>
                     <td>
                       <div className="jt-bar-bg">
                         <div

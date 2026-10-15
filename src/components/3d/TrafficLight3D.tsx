@@ -1,189 +1,172 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { Html } from '@react-three/drei';
 import * as THREE from 'three';
-import type { TrafficLight as TLType } from '../../types';
+import type { Direction, TrafficLight as TLType } from '../../types';
+import {
+  DIRECTION_VECTORS,
+  LANE_OFFSET,
+  ROAD_WIDTH,
+  STOP_LINE_OFFSET,
+  getJunctionApproaches,
+  leftOf,
+} from '../../config/roadNetwork';
+import { getDirectionalSignalState } from '../../engine/signals';
 
 interface TrafficLightProps {
   trafficLight: TLType;
-  onClick?: () => void;
+  onSelect?: (junctionId: string) => void;
   isSelected?: boolean;
+  showLabel?: boolean;
 }
 
-// Compute exact directional signal color for a specific direction
-export function getDirectionalSignalState(
-  light: TLType,
-  dir: 'north' | 'south' | 'east' | 'west'
-): 'red' | 'yellow' | 'green' {
-  const currentPhase = light.phases[light.currentPhaseIndex];
-  if (!currentPhase) return 'red';
+const LAMP_COLORS = {
+  red: { on: '#ff1a1a', off: '#2b0000' },
+  yellow: { on: '#ffcc00', off: '#2b2b00' },
+  green: { on: '#00ff44', off: '#002b0d' },
+} as const;
 
-  const isDirectionActive = currentPhase.directions.includes(dir);
-  if (isDirectionActive) {
-    return currentPhase.state; // 'green' or 'yellow'
-  }
-  return 'red'; // Inactive directions are RED
+const POLE_KERB_OFFSET = ROAD_WIDTH / 2 + 0.9;
+const ARM_REACH = POLE_KERB_OFFSET - LANE_OFFSET; // pole → centre of the approach lane
+
+interface SignalPost {
+  dir: Direction;
+  position: [number, number, number];
+  rotationY: number;
 }
 
-export const TrafficLight3D: React.FC<TrafficLightProps> = React.memo(({ trafficLight, onClick, isSelected }) => {
+/** One signal post per approach, on the driver's (left) kerb just before the stop line. */
+function buildPosts(junctionId: string, center: THREE.Vector3): SignalPost[] {
+  return getJunctionApproaches(junctionId).map((dir) => {
+    const f = DIRECTION_VECTORS[dir];
+    const p = center.clone()
+      .addScaledVector(f, -(STOP_LINE_OFFSET + 0.6))
+      .addScaledVector(leftOf(f), POLE_KERB_OFFSET);
+    // Local +Z faces approaching drivers (-f); local +X then points from the kerb over the lane
+    return { dir, position: [p.x, 0, p.z], rotationY: Math.atan2(-f.x, -f.z) };
+  });
+}
 
-  const currentPhase = trafficLight.phases[trafficLight.currentPhaseIndex];
-  const activeDirections = currentPhase?.directions || [];
-  const phaseState = currentPhase?.state || 'red';
-
-  // 4 corner signal posts mapped to incoming traffic directions
-  const signals: { x: number; z: number; rotY: number; dir: 'north' | 'south' | 'east' | 'west' }[] = [
-    { x: 5.5, z: 5.5, rotY: 0, dir: 'north' },                  // Facing Northbound traffic
-    { x: -5.5, z: 5.5, rotY: Math.PI / 2, dir: 'east' },       // Facing Eastbound traffic
-    { x: -5.5, z: -5.5, rotY: Math.PI, dir: 'south' },          // Facing Southbound traffic
-    { x: 5.5, z: -5.5, rotY: (Math.PI * 3) / 2, dir: 'west' },  // Facing Westbound traffic
+const SignalHead: React.FC<{ post: SignalPost; light: TLType }> = ({ post, light }) => {
+  const state = getDirectionalSignalState(light, post.dir);
+  const lamps: { key: 'red' | 'yellow' | 'green'; y: number }[] = [
+    { key: 'red', y: 0.9 },
+    { key: 'yellow', y: 0 },
+    { key: 'green', y: -0.9 },
   ];
 
+  return (
+    <group position={post.position} rotation={[0, post.rotationY, 0]}>
+      {/* Pole */}
+      <mesh position={[0, 3.3, 0]} castShadow>
+        <cylinderGeometry args={[0.16, 0.2, 6.6, 12]} />
+        <meshStandardMaterial color="#1f242d" metalness={0.8} roughness={0.2} />
+      </mesh>
+      {/* Safety collar */}
+      <mesh position={[0, 0.4, 0]}>
+        <cylinderGeometry args={[0.25, 0.28, 0.8, 12]} />
+        <meshStandardMaterial color="#f39c12" metalness={0.4} roughness={0.4} />
+      </mesh>
+      {/* Cantilever arm over the approach lane */}
+      <mesh position={[ARM_REACH / 2, 6.4, 0]} rotation={[0, 0, Math.PI / 2]} castShadow>
+        <cylinderGeometry args={[0.09, 0.11, ARM_REACH + 0.3, 10]} />
+        <meshStandardMaterial color="#1f242d" metalness={0.8} roughness={0.2} />
+      </mesh>
+
+      {/* Signal housing hanging over the lane, lamps facing traffic (+Z) */}
+      <group position={[ARM_REACH, 5.2, 0]}>
+        <mesh castShadow>
+          <boxGeometry args={[1.0, 2.8, 0.4]} />
+          <meshStandardMaterial color="#0c0e14" metalness={0.6} roughness={0.3} />
+        </mesh>
+        <mesh position={[0, 0, -0.05]}>
+          <boxGeometry args={[1.25, 3.05, 0.3]} />
+          <meshStandardMaterial color="#f39c12" metalness={0.5} roughness={0.4} />
+        </mesh>
+        {lamps.map(({ key, y }) => {
+          const on = state === key;
+          return (
+            <React.Fragment key={key}>
+              {/* Visor: top half of an open cylinder pointing at traffic */}
+              <mesh position={[0, y, 0.38]} rotation={[Math.PI / 2, 0, 0]}>
+                <cylinderGeometry args={[0.36, 0.36, 0.35, 12, 1, true, Math.PI / 2, Math.PI]} />
+                <meshStandardMaterial color="#111" side={THREE.DoubleSide} />
+              </mesh>
+              <mesh position={[0, y, 0.2]}>
+                <sphereGeometry args={[0.3, 20, 20]} />
+                <meshStandardMaterial
+                  color={on ? LAMP_COLORS[key].on : LAMP_COLORS[key].off}
+                  emissive={on ? LAMP_COLORS[key].on : LAMP_COLORS[key].off}
+                  emissiveIntensity={on ? 5 : 0.05}
+                  roughness={0.1}
+                />
+              </mesh>
+            </React.Fragment>
+          );
+        })}
+      </group>
+    </group>
+  );
+};
+
+export const TrafficLight3D: React.FC<TrafficLightProps> = React.memo(({ trafficLight, onSelect, isSelected, showLabel = true }) => {
   const pos = trafficLight.position;
+  const posts = useMemo(() => buildPosts(trafficLight.junctionId, pos), [trafficLight.junctionId, pos]);
+
+  const currentPhase = trafficLight.phases[trafficLight.currentPhaseIndex];
+  const activeDirections = currentPhase?.directions ?? [];
+  const phaseState = currentPhase?.state ?? 'red';
+  const tagColor = activeDirections.length > 0 ? (phaseState === 'green' ? '#2ecc71' : '#ffd11a') : '#ff4d4d';
 
   return (
-    <group onClick={(e) => { e.stopPropagation(); onClick?.(); }}>
-      {/* 4 Directional Signal Posts */}
-      {signals.map((sig, idx) => {
-        const sigState = getDirectionalSignalState(trafficLight, sig.dir);
+    <group onClick={(e) => { e.stopPropagation(); onSelect?.(trafficLight.junctionId); }}>
+      {posts.map((post) => (
+        <SignalHead key={post.dir} post={post} light={trafficLight} />
+      ))}
 
-        const colors = {
-          red: sigState === 'red' ? '#ff1a1a' : '#2b0000',
-          yellow: sigState === 'yellow' ? '#ffcc00' : '#2b2b00',
-          green: sigState === 'green' ? '#00ff44' : '#002b0d',
-        };
-
-        const emissiveIntensity = {
-          red: sigState === 'red' ? 5.0 : 0.05,
-          yellow: sigState === 'yellow' ? 5.0 : 0.05,
-          green: sigState === 'green' ? 5.0 : 0.05,
-        };
-
-        return (
-          <group
-            key={idx}
-            position={[pos.x + sig.x, 0, pos.z + sig.z]}
-            rotation={[0, sig.rotY + (trafficLight.rotation || 0), 0]}
-          >
-            {/* Vertical Heavy Pole */}
-            <mesh position={[0, 3.8, 0]} castShadow>
-              <cylinderGeometry args={[0.22, 0.28, 7.6, 12]} />
-              <meshStandardMaterial color="#1f242d" metalness={0.8} roughness={0.2} />
-            </mesh>
-
-            {/* Safety Yellow Collar */}
-            <mesh position={[0, 0.5, 0]}>
-              <cylinderGeometry args={[0.32, 0.36, 1, 12]} />
-              <meshStandardMaterial color="#f39c12" metalness={0.4} roughness={0.4} />
-            </mesh>
-
-            {/* Overhead Cantilever Arm (Extending over lane) */}
-            <mesh position={[0, 7.2, -2]} rotation={[Math.PI / 2, 0, 0]} castShadow>
-              <cylinderGeometry args={[0.15, 0.18, 4.2, 10]} />
-              <meshStandardMaterial color="#1f242d" metalness={0.8} roughness={0.2} />
-            </mesh>
-
-            {/* Signal Housing Box (Overhead) */}
-            <group position={[0, 7.0, -3.8]}>
-              {/* Backplate */}
-              <mesh castShadow>
-                <boxGeometry args={[1.3, 3.4, 0.45]} />
-                <meshStandardMaterial color="#0c0e14" metalness={0.6} roughness={0.3} />
-              </mesh>
-              <mesh position={[0, 0, -0.02]}>
-                <boxGeometry args={[1.45, 3.55, 0.4]} />
-                <meshStandardMaterial color="#f39c12" metalness={0.5} roughness={0.4} />
-              </mesh>
-
-              {/* Visors */}
-              {[-1.0, 0, 1.0].map((yOffset, i) => (
-                <mesh key={i} position={[0, yOffset + 0.15, -0.3]} rotation={[-0.3, 0, 0]}>
-                  <cylinderGeometry args={[0.38, 0.42, 0.35, 12, 1, true, 0, Math.PI]} />
-                  <meshStandardMaterial color="#1a1a1a" side={THREE.DoubleSide} />
-                </mesh>
-              ))}
-
-              {/* RED Lamp (Top) */}
-              <mesh position={[0, 1.0, -0.24]}>
-                <sphereGeometry args={[0.34, 24, 24]} />
-                <meshStandardMaterial
-                  color={colors.red}
-                  emissive={colors.red}
-                  emissiveIntensity={emissiveIntensity.red}
-                  roughness={0.1}
-                />
-              </mesh>
-
-              {/* YELLOW Lamp (Middle) */}
-              <mesh position={[0, 0, -0.24]}>
-                <sphereGeometry args={[0.34, 24, 24]} />
-                <meshStandardMaterial
-                  color={colors.yellow}
-                  emissive={colors.yellow}
-                  emissiveIntensity={emissiveIntensity.yellow}
-                  roughness={0.1}
-                />
-              </mesh>
-
-              {/* GREEN Lamp (Bottom) */}
-              <mesh position={[0, -1.0, -0.24]}>
-                <sphereGeometry args={[0.34, 24, 24]} />
-                <meshStandardMaterial
-                  color={colors.green}
-                  emissive={colors.green}
-                  emissiveIntensity={emissiveIntensity.green}
-                  roughness={0.1}
-                />
-              </mesh>
-            </group>
-          </group>
-        );
-      })}
-
-      {/* Floating 3D Junction Status Tag */}
-      <Html
-        position={[pos.x, 10.5, pos.z]}
-        center
-        distanceFactor={45}
-        style={{ pointerEvents: 'none' }}
-      >
-        <div
-          style={{
-            background: 'rgba(15, 18, 28, 0.92)',
-            backdropFilter: 'blur(8px)',
-            border: `2px solid ${activeDirections.length > 0 ? (phaseState === 'green' ? '#2ecc71' : '#ffd11a') : '#ff4d4d'}`,
-            borderRadius: '12px',
-            padding: '6px 14px',
-            color: '#ffffff',
-            fontFamily: 'Inter, system-ui, sans-serif',
-            fontSize: '13px',
-            fontWeight: '700',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '8px',
-            boxShadow: '0 4px 20px rgba(0,0,0,0.6)',
-            whiteSpace: 'nowrap',
-          }}
-        >
-          <span
+      {/* Floating junction status tag */}
+      {showLabel && (
+        <Html position={[pos.x, 10.5, pos.z]} center distanceFactor={45} style={{ pointerEvents: 'none' }}>
+          <div
             style={{
-              width: '10px',
-              height: '10px',
-              borderRadius: '50%',
-              backgroundColor: activeDirections.length > 0 ? (phaseState === 'green' ? '#2ecc71' : '#ffd11a') : '#ff4d4d',
-              boxShadow: `0 0 10px ${activeDirections.length > 0 ? (phaseState === 'green' ? '#2ecc71' : '#ffd11a') : '#ff4d4d'}`,
+              background: 'rgba(15, 18, 28, 0.92)',
+              backdropFilter: 'blur(8px)',
+              border: `2px solid ${tagColor}`,
+              borderRadius: '12px',
+              padding: '6px 14px',
+              color: '#ffffff',
+              fontFamily: 'Inter, system-ui, sans-serif',
+              fontSize: '13px',
+              fontWeight: 700,
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+              boxShadow: '0 4px 20px rgba(0,0,0,0.6)',
+              whiteSpace: 'nowrap',
             }}
-          />
-          <span>{trafficLight.junctionId}</span>
-          <span style={{ fontSize: '11px', opacity: 0.85, textTransform: 'uppercase' }}>
-            {activeDirections.length > 0 ? `${activeDirections.join('/')} ${phaseState}` : 'ALL RED'}
-          </span>
-        </div>
-      </Html>
+          >
+            <span
+              style={{
+                width: '10px',
+                height: '10px',
+                borderRadius: '50%',
+                backgroundColor: tagColor,
+                boxShadow: `0 0 10px ${tagColor}`,
+              }}
+            />
+            <span>{trafficLight.junctionId}</span>
+            <span style={{ fontSize: '11px', opacity: 0.85, textTransform: 'uppercase' }}>
+              {activeDirections.length > 0
+                ? `${activeDirections.join('/')}bound ${phaseState}${trafficLight.mode === 'manual' ? ' · manual' : ''}`
+                : 'ALL RED'}
+            </span>
+          </div>
+        </Html>
+      )}
 
-      {/* Selection Ring */}
+      {/* Selection ring */}
       {isSelected && (
         <mesh position={[pos.x, 0.08, pos.z]} rotation={[-Math.PI / 2, 0, 0]}>
-          <ringGeometry args={[8.5, 9.8, 48]} />
+          <ringGeometry args={[9.5, 10.8, 48]} />
           <meshStandardMaterial
             color="#f39c12"
             emissive="#f39c12"
